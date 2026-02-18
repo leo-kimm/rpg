@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pet Town MVP</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="game-container">
+        <!-- Game World Layer -->
+        <canvas id="game"></canvas>
+        
+        <!-- UI Overlay Layer -->
+        <div id="ui-layer">
+            <div id="debug-overlay" class="hidden"></div>
+            
+            <div id="hud">
+                <div class="hud-item">DAY <span id="day-display">1</span></div>
+                <div class="hud-item money">$<span id="money-display">0</span></div>
+                <div class="hud-item time-bar-container">
+                    <div id="time-bar-fill"></div>
+                </div>
+                <div id="quest-tracker" class="hud-item hidden"></div>
+            </div>
+
+            <div id="start-screen" class="screen">
+                <h1>PET TOWN</h1>
+                <p>Press Enter to Start</p>
+                <div id="start-options">
+                    <button id="btn-continue" class="btn" disabled>Continue</button>
+                    <button id="btn-newgame" class="btn">New Game</button>
+                </div>
+            </div>
+
+            <div id="pokedex" class="screen hidden">
+                <h2>MY PETS</h2>
+                <div id="pet-list" class="list-container">
+                    <!-- Fetched dynamically -->
+                </div>
+                <div id="pet-details">
+                    <h3 id="pet-name">Select a Pet</h3>
+                    <p id="pet-desc"></p>
+                    <div class="action-buttons">
+                        <button id="btn-walk" class="btn" disabled>Walk Together</button>
+                        <button id="btn-stop-walk" class="btn hidden">Stop Walking</button>
+                    </div>
+                </div>
+                <p class="guide">Press TAB to Close</p>
+            </div>
+
+            <div id="inventory-screen" class="screen hidden">
+                <h2>BACKPACK</h2>
+                <div id="inventory-list" class="list-container">
+                    </div>
+                <div id="item-details">
+                    <h3 id="item-name">No Item</h3>
+                    <p id="item-desc">Select an item to see details.</p>
+                </div>
+                <p class="guide">Press I to Close</p>
+            </div>
+
+            <div id="shop-screen" class="screen hidden">
+                <h2>FISH BUYBACK</h2>
+                <p>Money: <span id="shop-money">0</span>G</p>
+                <div id="shop-list" class="list-container"></div>
+                <p class="guide">Press Esc or E to Close</p>
+            </div>
+
+            <div id="quest-screen" class="screen hidden">
+                <div class="quest-panel">
+                    <div class="quest-head">
+                        <h2>퀘스트 로그</h2>
+                        <button id="quest-close" class="btn" type="button">닫기</button>
+                    </div>
+                    <div class="quest-body">
+                        <div id="quest-list" class="quest-list"></div>
+                        <div id="quest-detail" class="quest-detail"></div>
+                    </div>
+                    <p class="guide">Press Q or Esc to Close</p>
+                </div>
+            </div>
+
+            <div id="dialog-box" class="hidden">
+                <p id="dialog-text"></p>
+                <span class="next-indicator">Press Space</span>
+            </div>
+            
+            <div id="notification-area"></div>
+        </div>
+    </div>
+    <script type="module" src="./src/main.js"></script>
+</body>
+</html>
