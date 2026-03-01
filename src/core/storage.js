@@ -1,4 +1,4 @@
-﻿const STORAGE_KEY = 'pet_town_save_v1';
+const STORAGE_KEY = 'pet_town_save_v1';
 const CURRENT_VERSION = 3; // ?곗씠??援ъ“ 蹂寃?????踰꾩쟾???щ┝
 
 function normalizeState(data) {
