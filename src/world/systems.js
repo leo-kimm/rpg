@@ -1,15 +1,16 @@
-﻿import { MODES, FISH_RARITY_MULTIPLIERS, FISH_RARITY_ORDER } from '../core/constants.js';
-import { isWalkable, getTileType, getTileCharAt, isWaterAt, isNearPOI, getWaterRegion } from './map.js';
+import { MODES, TILE_SIZE, FISH_RARITY_MULTIPLIERS, FISH_RARITY_ORDER } from '../core/constants.js';
+import { isWalkable, getTileType, getTileCharAt, isWaterAt, isNearPOI, getWaterRegion, isFarmableTile } from './map.js';
 import { RNG } from '../core/rng.js';
 import { t } from '../core/i18n.js';
 import { getPetById, getSpawnablePets } from '../data/pets.js'; // [Changed] ??덉쨮?????怨쀬뵠??嚥≪뮇彛?import
 import { getItem, getFishLootTable } from '../data/items.js';
 import { QUESTS, QUESTS_BY_ID } from '../data/quests.js';
 import { Pet } from './entities.js';
+import { migrateInventory, invHas, invCount, invAdd, invRemove, invFind } from '../core/inventoryHelper.js';
 
 // [Strategy] ?袁⑥쟿??Frame) 疫꿸퀡而???袁⑤빒 ??볦퍢(Time) 疫꿸퀡而???猷???뽯선
 // 160ms = ??0.16?λ뜄彛????燁???猷?(??댭???쥓?ㅿ쭪????癒?봺筌왖????? ??얜즲)
-const MOVE_DELAY_MS = 160; 
+const MOVE_DELAY_MS = 160;
 let lastMoveTime = 0;
 const FISH_LOOT_TABLES = {
   TIER1: [
@@ -121,7 +122,7 @@ function applyPetLuckToWeights(weights, petSkillValue) {
 
 function getBaitCount(state, baitId) {
   if (!baitId || !Array.isArray(state?.inventory)) return 0;
-  return state.inventory.filter((id) => id === baitId).length;
+  return invCount(state.inventory, baitId);
 }
 
 function getActiveBaitBuff(state) {
@@ -158,13 +159,12 @@ function applyBaitToWeights(weights, baitShiftValue) {
 function consumeActiveBait(state, showDialog) {
   const baitId = state?.equipment?.baitId;
   if (!baitId || !Array.isArray(state?.inventory)) return;
-  const idx = state.inventory.indexOf(baitId);
-  if (idx >= 0) state.inventory.splice(idx, 1);
-  const remaining = state.inventory.filter((id) => id === baitId).length;
+  invRemove(state.inventory, baitId, 1);
+  const remaining = invCount(state.inventory, baitId);
   if (remaining <= 0) {
     state.equipment.baitId = null;
     if (showDialog) {
-      showDialog('미끼가 떨어졌습니다! 낚시를 계속하려면 상점을 이용하세요.');
+      showDialog('미끼가 떨어졌습니다! 낚시를 계속하려면 상점을 이용하세요.', '#e74c3c');
     }
   }
 }
@@ -297,8 +297,8 @@ function getFishingContext(state, player) {
     || isWaterAt(player.tx - 1, player.ty)
     || isWaterAt(player.tx + 1, player.ty);
 
-  const hasRod = Array.isArray(state.inventory) && state.inventory.some(id => {
-    const item = getItem(id);
+  const hasRod = Array.isArray(state.inventory) && state.inventory.some(e => {
+    const item = getItem(e.itemId || e);
     return item && item.toolKind === 'FISHING_ROD';
   });
   const hasEquippedRod = getEquippedRodTier(state) > 0;
@@ -372,12 +372,13 @@ function isTrapItem(itemId) {
 
 function ensureQuestState(state) {
   if (!state.quests || typeof state.quests !== 'object') {
-    state.quests = { activeQuestIds: ['tut_controls'], completedQuestIds: [], stepProgress: {}, newlyCompletedQueue: [] };
+    state.quests = { activeQuestIds: ['tut_controls'], completedQuestIds: [], stepProgress: {}, newlyCompletedQueue: [], accepted: {} };
   }
   if (!Array.isArray(state.quests.activeQuestIds)) state.quests.activeQuestIds = [];
   if (!Array.isArray(state.quests.completedQuestIds)) state.quests.completedQuestIds = [];
   if (!state.quests.stepProgress || typeof state.quests.stepProgress !== 'object') state.quests.stepProgress = {};
   if (!Array.isArray(state.quests.newlyCompletedQueue)) state.quests.newlyCompletedQueue = [];
+  if (!state.quests.accepted || typeof state.quests.accepted !== 'object') state.quests.accepted = {};
 
   if (state.quests.activeQuestIds.length === 0 && state.quests.completedQuestIds.length === 0) {
     const autoQuest = QUESTS.find((quest) => quest.autoAccept);
@@ -398,18 +399,33 @@ function getCurrentStep(quest, progressByStep) {
 function matchesQuestEvent(step, eventType, payload = {}) {
   if (!step || step.target !== eventType) return false;
   const match = step.match || {};
-  if (match.mode && payload.mode !== match.mode) return false;
-  if (match.requireNearWater && !payload.nearWater) return false;
-  if (Array.isArray(match.buyKinds) && match.buyKinds.length > 0) {
-    const item = payload.itemId ? getItem(payload.itemId) : null;
-    const itemKind = item?.equipSlot === 'BAIT'
-      ? 'BAIT'
-      : item?.equipSlot === 'ROD'
-        ? 'ROD'
-        : item?.equipSlot === 'BAG'
-          ? 'BAG'
-          : null;
-    if (!itemKind || !match.buyKinds.includes(itemKind)) return false;
+
+  // 검증 조건이 아예 없으면 무조건 패스
+  if (Object.keys(match).length === 0) return true;
+
+  for (const key in match) {
+    if (key === 'mode' && payload.mode !== match.mode) return false;
+    if (key === 'requireNearWater' && !payload.nearWater) return false;
+
+    // 상점 구매 종류(buyKinds) 검증 하드코어 패치
+    if (key === 'buyKinds' && Array.isArray(match.buyKinds)) {
+      const payloadKind = payload.kind || payload.item?.kind || payload.item?.equipSlot || null;
+      if (!payloadKind || !match.buyKinds.includes(payloadKind)) return false;
+    }
+
+    // 희귀도 최소치 검증
+    if (key === 'minRarity') {
+      const order = ['C', 'B', 'A', 'S', 'SS'];
+      const reqIdx = order.indexOf(match.minRarity);
+      const curIdx = order.indexOf(payload?.rarity || 'C');
+      if (curIdx < reqIdx) return false;
+    }
+
+    // 아이템 ID 직접 매칭
+    if (key === 'itemId') {
+      const pId = payload?.item?.id || payload?.itemId || payload?.id;
+      if (match[key] !== pId) return false;
+    }
   }
   return true;
 }
@@ -418,6 +434,13 @@ export const MovementSystem = {
   update(state, input, player, map) {
     // 1. 筌뤴뫀諭?筌ｋ똾寃?(?癒곕퓮 筌뤴뫀諭뜹첎? ?袁⑤빍筌???猷??븍뜃?)
     if (state.mode !== MODES.EXPLORE) return;
+
+    if (map && state.playerPos && globalThis.QuestSystem?.validateSpatialQuests) {
+      globalThis.QuestSystem.validateSpatialQuests(state, map);
+    } else if (map && state.playerPos && typeof QuestSystem !== 'undefined' && QuestSystem.validateSpatialQuests) {
+      QuestSystem.validateSpatialQuests(state, map);
+    }
+
     ensureSeatState(state);
     if (state.seat.isSeated) {
       player.isSeated = true;
@@ -454,8 +477,55 @@ export const MovementSystem = {
       const newTy = player.ty + dy;
       if (state.seat?.isSeated) return;
 
-      // ?겸뫖猷?筌ｋ똾寃?(map.js)
-      if (isWalkable(newTx, newTy)) {
+      // [M7] 고스트 충돌 검사 (Soft Collision: 0.5초 이상 충돌 시 bypass)
+      let ghostBlocked = false;
+      if (typeof window !== 'undefined' && window._ghostPlayers) {
+        const ghostEntities = window._ghostPlayers;
+        for (const uid of Object.keys(ghostEntities)) {
+          const g = ghostEntities[uid];
+          if (!g) continue;
+          // 밀려나는 중인 고스트는 충돌체로 인식하지 않음
+          if (g.isPushed) continue;
+          const gtx = Math.round(g.renderX / TILE_SIZE);
+          const gty = Math.round(g.renderY / TILE_SIZE);
+          if (gtx === newTx && gty === newTy) {
+            ghostBlocked = true;
+            break;
+          }
+        }
+      }
+      // Soft Collision Bypass: 0.5초 이상 연속 충돌 시 통과 허용 (데드락 방지)
+      if (ghostBlocked) {
+        if (!state._ghostCollisionStart) state._ghostCollisionStart = now;
+        if (now - state._ghostCollisionStart > 500) {
+          ghostBlocked = false; // bypass
+        }
+      } else {
+        state._ghostCollisionStart = 0;
+      }
+
+      const isHouseBlock = (tx, ty) => {
+        if (state.inInstance) return false;
+        const hitLocal = (state.houses || []).some(h => h.tx === tx && h.ty === ty);
+        let hitGlobal = false;
+        // [Phase 5] 타인의 집 충돌 판정 추가
+        if (typeof window !== 'undefined' && window._dataManager && window._dataManager.publicHouses) {
+            hitGlobal = Object.values(window._dataManager.publicHouses).flat().some(h => h.tx === tx && h.ty === ty);
+        } else if (typeof dataManager !== 'undefined' && dataManager.publicHouses) {
+            hitGlobal = Object.values(dataManager.publicHouses).flat().some(h => h.tx === tx && h.ty === ty);
+        }
+        return hitLocal || hitGlobal;
+      };
+
+      let instanceBlocked = false;
+      if (state.inInstance) {
+        const iBase = state.instanceBase || 1000;
+        if (newTx < iBase || newTx > iBase + 4 || newTy < iBase || newTy > iBase + 4) {
+          instanceBlocked = true; // 실내 벽 통과 방지
+        }
+      }
+
+      if (!instanceBlocked && (state.inInstance || isWalkable(newTx, newTy)) && !isHouseBlock(newTx, newTy) && !ghostBlocked) {
         if (state.seat?.isSeated) return;
         if (state.isFishing && ActionSystem.stopFishing) ActionSystem.stopFishing(state, player, 'MOVE');
         player.setPosition(newTx, newTy, facing);
@@ -474,33 +544,68 @@ export const MovementSystem = {
 };
 
 export const InteractionSystem = {
-  update(state, input, map, showDialogCallback, dt = 0) {
+  update(state, input, map, showDialogCallback, dt = 0, addSystemMsg = null) {
+    if (state.mode === 'BUILD') {
+      if (input.wasActionPressed('INTERACT')) {
+        const targetId = state.buildTarget;
+        const bTx = state.playerPos.tx;
+        const bTy = state.playerPos.ty;
+
+        // [Phase 5-0] 알박기 방지 검증 추가
+        if (Array.isArray(map?.npcs)) {
+          const tooCloseNpc = map.npcs.find(npc =>
+            (Math.abs(bTx - npc.x) + Math.abs(bTy - npc.y)) <= 3
+          );
+          if (tooCloseNpc) {
+            if (addSystemMsg) addSystemMsg('중요 시설(NPC/상점) 근처에는 건물을 설치할 수 없습니다.', '#e74c3c');
+            input.consumeAction('INTERACT');
+            return;
+          }
+        }
+
+        if (!Array.isArray(state.houses)) state.houses = [];
+
+        // 1. 해당 좌표에 집 설치
+        state.houses.push({ id: targetId, tx: bTx, ty: bTy });
+
+        // 2. 인벤토리에서 소모
+        if (!Array.isArray(state.inventory)) state.inventory = [];
+        const idx = state.inventory.findIndex(i => i.itemId === targetId);
+        if (idx >= 0) {
+          state.inventory[idx].count -= 1;
+          if (state.inventory[idx].count <= 0) state.inventory.splice(idx, 1);
+        }
+
+        // 3. 모드 복귀
+        if (addSystemMsg) addSystemMsg('건축물이 설치되었습니다!', '#2ecc71');
+        state.mode = MODES.EXPLORE;
+        state.buildTarget = null;
+        input.consumeAction('INTERACT');
+      }
+      return; // 일반 상호작용 차단
+    }
+
     if (state.mode !== MODES.EXPLORE) return;
     if (!state.ui || typeof state.ui !== 'object') state.ui = {};
     if (!state.ui.npcBubble || typeof state.ui.npcBubble !== 'object') {
       state.ui.npcBubble = { visible: false, text: '', idx: 0, timer: 0, id: null };
     }
 
-    const SELL_LINES = [
-      '안녕~ 물고기 팔래말래?',
-      '크기가 애매하긴해~',
-      '갑붕싸.. 월척이로구만~'
-    ];
-    const BUY_LINES = [
-      '낚시용품은 여기서!',
-      '좋은 미끼 들어왔어~',
-      '오늘은 대물 각이야!'
-    ];
+    const FISH_SELL_LINES = ['안녕~ 물고기 팔래말래?', '크기가 애매하긴해~', '갑붕싸.. 월척이로구만~'];
+    const FISH_BUY_LINES = ['낚시용품은 여기서!', '좋은 미끼 들어왔어~', '오늘은 대물 각이야!'];
+    const FARM_SELL_LINES = ['음메~ 신선한 작물 가져왔소?', '황소장터에 온 걸 환영하소!', '최고가로 쳐주겠소!'];
+    const FARM_BUY_LINES = ['씨앗 심고 부자되세요!', '최고급 괭이 입고완료!', '농사의 기본은 장비죠!'];
 
     const npcs = Array.isArray(map?.npcs) ? map.npcs : [];
     const nearNpc = npcs.find((n) => Math.abs(state.playerPos.tx - n.x) + Math.abs(state.playerPos.ty - n.y) <= 2);
     if (nearNpc) {
       const bubble = state.ui.npcBubble;
-      const lines = nearNpc.kind === 'SHOPKEEPER_BUY'
-        ? BUY_LINES
-        : nearNpc.kind === 'QUEST_GIVER'
-          ? ['새로운 퀘스트가 있어요!', 'E로 대화해보세요']
-          : SELL_LINES;
+      let lines = FISH_SELL_LINES;
+      if (nearNpc.shopId === 'FARM_MARKET') lines = FARM_SELL_LINES;
+      else if (nearNpc.shopId === 'FARM_SHOP') lines = FARM_BUY_LINES;
+      else if (nearNpc.shopId === 'FISH_MARKET' || nearNpc.kind === 'SHOPKEEPER_SELL') lines = FISH_SELL_LINES;
+      else if (nearNpc.shopId === 'TACKLE_SHOP' || nearNpc.kind === 'SHOPKEEPER_BUY') lines = FISH_BUY_LINES;
+      else if (nearNpc.kind === 'QUEST_GIVER') lines = ['새로운 퀘스트가 있어요!', 'Space로 대화해보세요'];
       if (bubble.id !== nearNpc.id) {
         bubble.idx = 0;
         bubble.timer = 0;
@@ -524,73 +629,304 @@ export const InteractionSystem = {
 
     if (state.discoverCooldown > 0) state.discoverCooldown--;
 
+    // [Phase 4: 하우징 진입 / 탈출]
+    const pFacing = state.playerPos.facing || 'down';
+    const fX = state.playerPos.tx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
+    const fY = state.playerPos.ty + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
+    
+    // [Phase 5] 내 집과 타인의 집 목록 통합
+    let allHouses = [...(state.houses || [])];
+    if (typeof window !== 'undefined' && window._dataManager && window._dataManager.publicHouses) {
+      allHouses = allHouses.concat(Object.values(window._dataManager.publicHouses).flat());
+    } else if (typeof dataManager !== 'undefined' && dataManager.publicHouses) {
+      allHouses = allHouses.concat(Object.values(dataManager.publicHouses).flat());
+    }
+
+    const targetHouse = allHouses.find(h => h.tx === fX && h.ty === fY);
+
+
     if (input.wasActionPressed('INTERACT')) {
+
+      // 1. 퇴장 로직: 텐트 내부의 하단 중앙(iBase+2, iBase+4 주변)에서 Space 누를 시
+      if (state.inInstance && state.playerPos.ty >= (state.instanceBase || 1000) + 3) {
+        if (state.lastWorldPos) {
+          state.playerPos.tx = state.lastWorldPos.tx;
+          state.playerPos.ty = state.lastWorldPos.ty + 1; // 텐트 바로 아래로 복귀
+          if (typeof window !== 'undefined' && window.player) {
+            window.player.setPosition(state.playerPos.tx, state.playerPos.ty, 'down');
+            window.player.renderX = state.playerPos.tx * 32; // TILE_SIZE
+            window.player.renderY = state.playerPos.ty * 32;
+            if (typeof camera !== 'undefined' && typeof WORLD_MAP !== 'undefined') {
+              camera.x = window.player.renderX - camera.width / 2 + TILE_SIZE / 2;
+              camera.y = window.player.renderY - camera.height / 2 + TILE_SIZE / 2;
+              camera.update(window.player, WORLD_MAP.width, WORLD_MAP.height);
+            }
+          }
+          state.inInstance = false;
+          if (typeof dataManager !== 'undefined' && dataManager.saveUserData) dataManager.saveUserData(state).catch(e => console.error(e));
+          if (addSystemMsg) addSystemMsg('밖으로 나왔습니다.', '#f1c40f');
+        }
+        input.consumeAction('INTERACT');
+        return;
+      }
+
+      // 2. 수면 로직: 내 발밑이나 앞칸에 'bed_camp'가 있을 때
+      const pFacingBed = state.playerPos.facing || 'down';
+      const fTx = state.playerPos.tx + (pFacingBed === 'left' ? -1 : pFacingBed === 'right' ? 1 : 0);
+      const fTy = state.playerPos.ty + (pFacingBed === 'up' ? -1 : pFacingBed === 'down' ? 1 : 0);
+
+      // [Phase 5] 통합된 집 배열(allHouses)에서 침대 찾기
+      const targetBed = allHouses.find(h => h.id === 'bed_camp' && ((h.tx === state.playerPos.tx && h.ty === state.playerPos.ty) || (h.tx === fTx && h.ty === fTy)));
+
+      if (targetBed) {
+        if (state.isSleeping) return; // 중복 실행 방지
+        // [데이터 주도 설계] 침대 ID별 이불 색상 사전(Dictionary)
+        const BED_STYLES = {
+          'bed_camp': { fold: '#5a5a5a', body: '#2c2c2c' }, // 현재 야전 침대 (진회색/검정)
+          'bed_hospital': { fold: '#ffffff', body: '#3498db' }, // [향후 확장 예시] 병원 침대 (흰색/파랑)
+          'bed_luxury': { fold: '#f1c40f', body: '#e74c3c' }  // [향후 확장 예시] 고급 침대 (금색/빨강)
+        };
+
+        // const bedTx = targetBed.tx;
+        // const bedTy = targetBed.ty;
+
+        // 1. 상태 및 렌더링 좌표 강제 스냅 (바닥에서 자는 현상 방지)
+        state.isSleeping = true;
+        state.sleepProgress = 0; // [Phase 4-3] 프레임 기반 10초 타이머 초기화 (main.js에서 갱신)
+        state.playerPos.tx = targetBed.tx;
+        state.playerPos.ty = targetBed.ty;
+
+        // 타겟 침대의 ID를 기반으로 스타일을 불러와 상태에 저장 (없으면 기본값)
+        state.bedStyle = BED_STYLES[targetBed.id] || BED_STYLES['bed_camp'];
+
+        if (typeof window !== 'undefined' && window.player) {
+          window.player.setPosition(targetBed.tx, targetBed.ty, 'down');
+          // TILE_SIZE(32) 정중앙으로 소수점 없이 강제 고정
+          window.player.renderX = bedTx * 32;
+          window.player.renderY = bedTy * 32;
+          window.player.isSleeping = true;
+        }
+
+        input.consumeAction('INTERACT');
+        return;
+      }
+
+      // 3. 밖에서 안으로 진입 (내 텐트 + 타인 텐트)
+      if (targetHouse && targetHouse.id === 'house_tent' && !state.inInstance) {
+        let ownerUid = state.id || (typeof dataManager !== 'undefined' ? dataManager.userId : 'local');
+
+        // [Phase 5] 내 집이 아니라면 타인의 집인지 publicHouses에서 다시 검색
+        if (!(state.houses || []).some(h => h.tx === targetHouse.tx && h.ty === targetHouse.ty)) {
+          if (typeof dataManager !== 'undefined' && dataManager.publicHouses) {
+            for (const [uid, pubHouses] of Object.entries(dataManager.publicHouses)) {
+              if (pubHouses && pubHouses.some(h => h.tx === targetHouse.tx && h.ty === targetHouse.ty)) {
+                ownerUid = uid;
+                break;
+              }
+            }
+          }
+        }
+
+        // [Phase 5-0] 인스턴스 룸 해시 충돌(Hash Collision) 방어 
+        let hash = 0;
+        for (let i = 0; i < ownerUid.length; i++) hash = ((hash << 5) - hash + ownerUid.charCodeAt(i)) | 0;
+        const iBase = 10000 + (Math.abs(hash) % 100000) * 50;
+
+        state.instanceBase = iBase;
+        state.lastWorldPos = { ...state.playerPos };
+
+        const enterX = iBase + 2; const enterY = iBase + 2;
+        state.playerPos.tx = enterX; state.playerPos.ty = enterY; // 내부 중앙 안착
+        if (typeof window !== 'undefined' && window.player) {
+          window.player.setPosition(enterX, enterY, 'down');
+          window.player.renderX = enterX * 32; // TILE_SIZE 직결
+          window.player.renderY = enterY * 32;
+          if (typeof camera !== 'undefined' && typeof WORLD_MAP !== 'undefined') {
+            camera.x = window.player.renderX - camera.width / 2 + TILE_SIZE / 2;
+            camera.y = window.player.renderY - camera.height / 2 + TILE_SIZE / 2;
+            camera.update(window.player, WORLD_MAP.width, WORLD_MAP.height);
+          }
+        }
+
+        state.inInstance = true;
+        if (typeof dataManager !== 'undefined' && dataManager.saveUserData) dataManager.saveUserData(state).catch(e => console.error(e));
+
+        const ownerName = ownerUid === (typeof dataManager !== 'undefined' ? dataManager.userId : 'local') ? '내' : `${ownerUid.substring(0, 4)}님의`;
+        if (addSystemMsg) addSystemMsg(`${ownerName} 텐트 내부로 들어왔습니다.`, '#f1c40f');
+        input.consumeAction('INTERACT');
+        return;
+      }
+    }
+
+    if (input.wasActionPressed('INTERACT')) {
+      // [M2] 밀치기 트리거: 정면 고스트 감지 + 마주보기 검증
+      if (typeof window !== 'undefined' && window._ghostPlayers && state.playerPos) {
+        const pFacing = state.playerPos.facing || 'down';
+        const frontX = state.playerPos.tx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
+        const frontY = state.playerPos.ty + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
+        const oppDir = { up: 'down', down: 'up', left: 'right', right: 'left' };
+        const pushDelta = { up: { dx: 0, dy: -1 }, down: { dx: 0, dy: 1 }, left: { dx: -1, dy: 0 }, right: { dx: 1, dy: 0 } };
+
+        for (const [uid, ghost] of Object.entries(window._ghostPlayers)) {
+          if (!ghost || ghost.isPushed) continue;
+          const gtx = Math.round(ghost.renderX / TILE_SIZE);
+          const gty = Math.round(ghost.renderY / TILE_SIZE);
+          if (gtx === frontX && gty === frontY) {
+            const isFacing = ghost.facing === oppDir[pFacing];
+            if (isFacing) {
+              // 밀려날 뒤쪽 타일이 이동 가능한지 확인
+              const pd = pushDelta[pFacing];
+              const backTx = gtx + pd.dx;
+              const backTy = gty + pd.dy;
+              if (isWalkable(backTx, backTy)) {
+                // dataManager는 main.js 스코프이므로 window 경유
+                if (typeof window._dataManager?.pushPlayer === 'function') {
+                  window._dataManager.pushPlayer(uid, pFacing);
+                }
+                if (addSystemMsg) addSystemMsg('상대를 밀었습니다!', '#f39c12');
+                QuestSystem.emitQuestEvent(state, 'PLAYER_PUSH', { targetUid: uid, direction: pFacing });
+                input.consumeAction('INTERACT');
+                return; // 밀기 성공 시 일반 상호작용 중단
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      // [M5] 수면 엔진 (야전 침대 상호작용)
+      if (state.furniture && state.playerPos) {
+        const { tx: pTx, ty: pTy, facing: pFacing } = state.playerPos;
+        const fTx = pTx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
+        const fTy = pTy + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
+        const bed = state.furniture.find(f => f.id === 'bed_camp' && ((f.tx === pTx && f.ty === pTy) || (f.tx === fTx && f.ty === fTy)));
+
+        if (bed) {
+          if (state.isSleeping) return; // 중복 실행 방지
+
+          state.isSleeping = true;
+          state.sleepProgress = 0;
+          state.playerPos.tx = bed.tx;
+          state.playerPos.ty = bed.ty;
+
+          if (typeof window !== 'undefined' && window.player) {
+            window.player.setPosition(bed.tx, bed.ty, 'down');
+            window.player.renderX = bed.tx * 32;
+            window.player.renderY = bed.ty * 32;
+            window.player.isSleeping = true; // 이 값이 들어가야 entities.js에서 90도로 눕습니다.
+          }
+          input.consumeAction('INTERACT');
+          return;
+        }
+      }
+
+      // [Phase 3] 농사 상호작용 상태 머신 (수확 → 밭갈기 → 파종 → 물주기)
+      if (state.farm && state.playerPos) {
+        // [Phase 5] 발밑 타겟팅 (현재 밟고 있는 타일)
+        const farmTx = state.playerPos.tx;
+        const farmTy = state.playerPos.ty;
+        const tileKey = `${farmTx},${farmTy}`;
+        const farmTile = state.farm[tileKey];
+        const tileType = getTileType(farmTx, farmTy);
+
+        const activeToolId = state.equipment?.activeToolId;
+        const activeTool = activeToolId ? getItem(activeToolId) : null;
+
+        // A: 수확 (stage 3, 장비 무관)
+        if (farmTile && farmTile.stage === 3) {
+          if (addSystemMsg) addSystemMsg('작물을 수확했습니다!', '#2ecc71');
+          if (!Array.isArray(state.inventory)) state.inventory = [];
+          if (farmTile.cropId) invAdd(state.inventory, farmTile.cropId, 1);
+          delete state.farm[tileKey];
+          state.uiDirty = true;
+          input.consumeAction('INTERACT');
+          return;
+        }
+
+        // B: 밭갈기 (괭이 + 농사 가능 타일 + 아직 밭 아님)
+        if (activeTool?.toolKind === 'FARM_HOE' && !farmTile && isFarmableTile(farmTx, farmTy)) {
+          if (state.stamina < 2) {
+            if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
+            return;
+          }
+          state.stamina = Math.max(0, state.stamina - 2);
+          state.farm[tileKey] = { cropId: null, stage: 0, waterLevel: 0, plantedAt: null };
+          if (addSystemMsg) addSystemMsg('밭을 일궜습니다.', '#e67e22');
+          state.uiDirty = true;
+          input.consumeAction('INTERACT');
+          return;
+        }
+
+        // C: 파종 (씨앗 + 빈 밭)
+        if (activeTool?.toolKind === 'FARM_SEED' && farmTile && !farmTile.cropId) {
+          if (state.stamina < 2) {
+            if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
+            return;
+          }
+          state.stamina = Math.max(0, state.stamina - 2);
+          farmTile.cropId = activeTool.harvestsInto || activeToolId;
+          farmTile.stage = 1;
+          farmTile.plantedAt = Date.now();
+          invRemove(state.inventory, activeToolId, 1);
+          if (invCount(state.inventory, activeToolId) <= 0) state.equipment.activeToolId = null;
+          if (addSystemMsg) addSystemMsg('씨앗을 심었습니다.', '#f1c40f');
+          state.uiDirty = true;
+          input.consumeAction('INTERACT');
+          return;
+        }
+
+        // D: 물주기 (물뿌리개 + 성장 중 + 수분 없음)
+        if (activeTool?.toolKind === 'FARM_WATER' && farmTile && farmTile.stage > 0 && farmTile.stage < 3 && farmTile.waterLevel === 0) {
+          if (state.stamina < 2) {
+            if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
+            return;
+          }
+          state.stamina = Math.max(0, state.stamina - 2);
+          farmTile.waterLevel = 1;
+          if (addSystemMsg) addSystemMsg('작물에 물을 주었습니다.', '#3498db');
+          state.uiDirty = true;
+          input.consumeAction('INTERACT');
+          return;
+        }
+      }
+
       ensureTrapState(state);
       const fishMarket = isNearPOI(map, state.playerPos, 'FISH_MARKET');
       const tackleShop = isNearPOI(map, state.playerPos, 'TACKLE_SHOP');
-      if (fishMarket || tackleShop) {
+      const farmMarket = isNearPOI(map, state.playerPos, 'FARM_MARKET');
+      const farmShop = isNearPOI(map, state.playerPos, 'FARM_SHOP');
+      if (fishMarket || tackleShop || farmMarket || farmShop) {
         state.mode = MODES.SHOP;
         if (!state.shop || typeof state.shop !== 'object') state.shop = { isOpen: false, mode: 'SELL', shopId: null };
         state.shop.isOpen = true;
-        state.shop.mode = fishMarket ? 'SELL' : 'BUY';
-        state.shop.shopId = fishMarket ? 'FISH_MARKET' : 'TACKLE_SHOP';
+        state.shop.mode = fishMarket ? 'SELL' : tackleShop ? 'BUY' : farmMarket ? 'SELL_FARM' : 'BUY_FARM';
+        state.shop.shopId = fishMarket ? 'FISH_MARKET' : tackleShop ? 'TACKLE_SHOP' : farmMarket ? 'FARM_MARKET' : 'FARM_SHOP';
         state.shopCloseLockUntil = Date.now() + 200;
         QuestSystem.emitQuestEvent(state, 'OPEN_SHOP', { mode: state.shop.mode, shopId: state.shop.shopId });
+        input.consumeAction('INTERACT');
+        input.consumeAction('USE_TOOL');
         return;
       }
 
       const questNpc = npcs.find((n) => n.kind === 'QUEST_GIVER' && Math.abs(state.playerPos.tx - n.x) + Math.abs(state.playerPos.ty - n.y) <= 2);
       if (questNpc) {
-        QuestSystem.emitQuestEvent(state, 'TALK_TO_NPC', { npcId: questNpc.id });
+        // 1. 대화문 먼저 확보
         const questMessage = QuestSystem.getQuestNpcDialog(state, questNpc.id, questNpc.name);
-        if (questMessage) showDialogCallback(questMessage);
-        return;
-      }
 
-      const front = getFishingContext(state, { tx: state.playerPos.tx, ty: state.playerPos.ty, facing: state.playerPos.facing });
-      const trapAtFront = state.traps.find((t) => t.x === front.targetTx && t.y === front.targetTy);
-      if (trapAtFront) {
-        const trapItemId = trapAtFront.itemId || 'bait_heavy';
-        if (!Array.isArray(state.inventory)) state.inventory = [];
-        if (state.inventory.length >= 260) {
-          showDialogCallback('인벤토리가 가득 차서 통발을 회수할 수 없다.');
-          return;
-        }
-        state.inventory.push(trapItemId);
-        state.trapInventory.push({
-          itemId: trapItemId,
-          capacity: trapAtFront.capacity || getTrapCapacityByItem(trapItemId),
-          fishes: Array.isArray(trapAtFront.fishes) ? trapAtFront.fishes.slice() : []
-        });
-        state.traps = state.traps.filter((t) => t !== trapAtFront);
-        showDialogCallback('통발을 회수했다.');
-        return;
-      }
+        // 2. 이벤트 발송 (퀘스트 완료 및 보상 지급 트리거)
+        QuestSystem.emitQuestEvent(state, 'TALK_TO_NPC', { npcId: questNpc.id });
 
-      const trapToolId = state?.equipment?.trapId || state?.equippedToolId;
-      if (isTrapItem(trapToolId) && front.frontIsWater) {
-        const exists = state.traps.some((t) => t.x === front.targetTx && t.y === front.targetTy);
-        if (exists) {
-          showDialogCallback('이미 통발이 설치되어 있다.');
-          return;
+        // 3. 몰입형 대사 덮어쓰기 (하드코딩)
+        let finalMsg = questMessage;
+        if (questNpc.id === 'NPC_MAYOR' && questMessage && questMessage.includes('이장과 대화')) {
+          finalMsg = "촌장: 오, 새로 온 주민이구만! 허허, 일단 여기서 지내려면 잠자리가 필요할 터. 마을 기금으로 낡은 텐트와 침대를 하나 주겠네. 인벤토리(I)의 [설치] 탭을 열어 바닥에 설치해보게나!";
         }
-        const invIdx = Array.isArray(state.inventory) ? state.inventory.indexOf(trapToolId) : -1;
-        if (invIdx < 0) {
-          showDialogCallback('설치할 통발이 없다.');
-          return;
-        }
-        state.inventory.splice(invIdx, 1);
-        const stashIdx = state.trapInventory.findIndex((ti) => ti.itemId === trapToolId);
-        const trapBag = stashIdx >= 0 ? state.trapInventory.splice(stashIdx, 1)[0] : null;
-        state.traps.push({
-          x: front.targetTx,
-          y: front.targetTy,
-          itemId: trapToolId,
-          capacity: trapBag?.capacity || getTrapCapacityByItem(trapToolId),
-          fishes: Array.isArray(trapBag?.fishes) ? trapBag.fishes : [],
-          timer: 0
-        });
-        showDialogCallback('통발을 설치했다.');
+
+        // 4. 대사 출력
+        if (finalMsg) showDialogCallback(finalMsg);
+
+        input.consumeAction('INTERACT');
+        input.consumeAction('USE_TOOL');
         return;
       }
 
@@ -604,7 +940,75 @@ export const InteractionSystem = {
       if (nearBush) {
         showDialogCallback('수풀을 조사한다...');
         this.handleBushEncounter(state, map, showDialogCallback);
+        input.consumeAction('INTERACT');
+        input.consumeAction('USE_TOOL');
       }
+    }
+
+    // [D키 전용] 통발 설치 / 회수 (장착 의존성 제거)
+    if (input.wasActionPressed('PLACE_TRAP')) {
+      ensureTrapState(state);
+      const front = getFishingContext(state, { tx: state.playerPos.tx, ty: state.playerPos.ty, facing: state.playerPos.facing });
+
+      // 물가가 아니면 안내
+      if (!front.frontIsWater) {
+        if (addSystemMsg) addSystemMsg('통발은 물가에만 설치할 수 있습니다.', '#e74c3c');
+        return;
+      }
+
+      // 1. 회수: 눈앞 타일에 설치된 통발이 있는지 확인
+      const trapAtFront = state.traps.find((t) => t.x === front.targetTx && t.y === front.targetTy);
+      if (trapAtFront) {
+        const trapItemId = trapAtFront.itemId || 'bait_heavy';
+        if (!Array.isArray(state.inventory)) state.inventory = [];
+        if (state.inventory.length >= 260) {
+          if (addSystemMsg) addSystemMsg('인벤토리가 가득 차서 통발을 회수할 수 없다.', '#e74c3c');
+          return;
+        }
+        invAdd(state.inventory, trapItemId);
+        state.trapInventory.push({
+          itemId: trapItemId,
+          capacity: trapAtFront.capacity || getTrapCapacityByItem(trapItemId),
+          fishes: Array.isArray(trapAtFront.fishes) ? trapAtFront.fishes.slice() : []
+        });
+        state.traps = state.traps.filter((t) => t !== trapAtFront);
+        if (addSystemMsg) addSystemMsg('통발을 회수했습니다.', '#3498db');
+        state.uiDirty = true;
+        QuestSystem.emitQuestEvent(state, 'PLACE_TRAP', { action: 'retrieve' });
+        return;
+      }
+
+      // 2. 설치: 인벤토리에서 통발 아이템 탐색 (장착 없이 바로 사용)
+      const exists = state.traps.some((t) => t.x === front.targetTx && t.y === front.targetTy);
+      if (exists) {
+        if (addSystemMsg) addSystemMsg('이미 통발이 설치되어 있다.', '#e74c3c');
+        return;
+      }
+
+      // 인벤토리에서 통발 아이템 찾기
+      // 인벤토리에서 통발 아이템 찾기 (스택형)
+      const trapInvEntry = state.inventory.find(e => isTrapItem(e.itemId));
+      if (!trapInvEntry) {
+        if (addSystemMsg) addSystemMsg('인벤토리에 설치할 통발이 없습니다.', '#e74c3c');
+        return;
+      }
+
+      const trapToolId = trapInvEntry.itemId;
+      invRemove(state.inventory, trapToolId, 1);
+      const stashIdx = state.trapInventory.findIndex((ti) => ti.itemId === trapToolId);
+      const trapBag = stashIdx >= 0 ? state.trapInventory.splice(stashIdx, 1)[0] : null;
+      state.traps.push({
+        x: front.targetTx,
+        y: front.targetTy,
+        itemId: trapToolId,
+        capacity: trapBag?.capacity || getTrapCapacityByItem(trapToolId),
+        fishes: Array.isArray(trapBag?.fishes) ? trapBag.fishes : [],
+        timer: 0
+      });
+      if (addSystemMsg) addSystemMsg('통발을 설치했습니다.', '#2ecc71');
+      state.uiDirty = true;
+      QuestSystem.emitQuestEvent(state, 'PLACE_TRAP', { action: 'place' });
+      return;
     }
   },
 
@@ -695,6 +1099,7 @@ export const TrapSystem = {
       const weightG = rollFishWeight(fish.weightG || 120, 0);
       const unitPrice = computeCatchPrice(fish, weightG, rarity);
       trap.fishes.push({ itemId: fish.id, rarity, weightG, unitPrice });
+      state.uiDirty = true;
     });
   }
 };
@@ -730,7 +1135,7 @@ export const ActionSystem = {
     if ('fishingPreview' in state) state.fishingPreview = null;
   },
 
-  update(state, input, player, map, showDialog, dt = 0.016) {
+  update(state, input, player, map, showDialog, dt = 0.016, addSystemMsg = null) {
     ensureSeatState(state);
     if (state.mode !== MODES.EXPLORE && state.seat.isSeated) {
       this.stopSeating(state, player, 'MODE_CHANGE');
@@ -738,7 +1143,7 @@ export const ActionSystem = {
     }
 
     if (input.wasActionPressed('TOGGLE_SEAT')) {
-      const hasChair = Array.isArray(state?.inventory) && state.inventory.includes('fishing_chair');
+      const hasChair = Array.isArray(state?.inventory) && invHas(state.inventory, 'fishing_chair');
       if (state.seat.isSeated) {
         this.stopSeating(state, player, 'TOGGLE_OFF');
       } else if (!hasChair) {
@@ -797,6 +1202,15 @@ export const ActionSystem = {
         return;
       }
 
+      // 미끼 하드 밸리데이션: 장착된 미끼가 없으면 낚시 강제 종료
+      const activeBaitId = state.equipment?.baitId;
+      if (!activeBaitId || getBaitCount(state, activeBaitId) <= 0) {
+        if (addSystemMsg) addSystemMsg('장착된 미끼가 없어 낚시가 취소되었습니다.', '#e74c3c');
+        state.equipment.baitId = null;
+        this.stopFishing(state, player, 'NO_BAIT');
+        return;
+      }
+
       // Fishing success roll while fishing is active.
       const rod = getEquippedRodInfo(state);
       const rodTier = rod.tier || 1;
@@ -830,7 +1244,8 @@ export const ActionSystem = {
           const bagCap = equippedBag?.capacity || 10;
           if ((equippedBag?.fishes?.length || 0) >= bagCap) {
             this.stopFishing(state, player, 'BAG_FULL');
-            showDialog(t('msg.fishing.bagFull'));
+            if (addSystemMsg) addSystemMsg(t('msg.fishing.bagFull'), '#e74c3c');
+            else showDialog(t('msg.fishing.bagFull'));
             return;
           }
 
@@ -842,6 +1257,7 @@ export const ActionSystem = {
             weightG: rolledWeight,
             unitPrice
           });
+          state.uiDirty = true;
           state.lastCatch = caughtFish.id;
           state.lastCatchAt = Date.now();
           if (!state.debug) state.debug = {};
@@ -860,12 +1276,21 @@ export const ActionSystem = {
             finalRarity: rarity,
             finalFishId: caughtFish.id
           };
-          consumeActiveBait(state, showDialog);
+          consumeActiveBait(state, addSystemMsg || showDialog);
           state.fishingCooldown = rodTier >= 3 ? 25 : rodTier >= 2 ? 40 : 60;
           this.stopFishing(state, player, 'CAUGHT');
           QuestSystem.emitQuestEvent(state, 'CATCH_FISH', { fishId: caughtFish.id, rarity, weightG: rolledWeight });
           const fishName = caughtFish.nameKey ? t(caughtFish.nameKey) : caughtFish.name;
-          showDialog(t('msg.fishing.caught', { name: fishName }));
+          const catchMsg = t('msg.fishing.caught', { name: fishName });
+
+          // 하이브리드 알림: S/SS는 중앙 대화창, C/B/A는 시스템 로그
+          if ((rarity === 'S' || rarity === 'SS') && showDialog) {
+            showDialog(`${catchMsg} (+${unitPrice}G) \u2728`);
+          } else if (addSystemMsg) {
+            addSystemMsg(`${catchMsg} (+${unitPrice}G)`, rarity);
+          } else {
+            showDialog(catchMsg);
+          }
         }
       }
     }
@@ -874,16 +1299,18 @@ export const ActionSystem = {
     if (input.wasActionPressed('USE_TOOL')) {
       if (!state.debug) state.debug = {};
       if (!state?.equipment?.baitId) {
-        showDialog('미끼가 없습니다! 인벤토리(I)에서 미끼를 장착해주세요.');
+        if (addSystemMsg) addSystemMsg('미끼가 없습니다! 인벤토리(I)에서 미끼를 장착해주세요.', 'C');
+        else showDialog('미끼가 없습니다! 인벤토리(I)에서 미끼를 장착해주세요.');
         state.debug.fishingStartGate = 'NO_BAIT';
         return;
       }
       const baitId = state.equipment.baitId;
       const inv = Array.isArray(state?.inventory) ? state.inventory : [];
-      const baitCount = inv.filter((id) => id === baitId).length;
+      const baitCount = invCount(inv, baitId);
       if (baitCount <= 0) {
         state.equipment.baitId = null;
-        showDialog('미끼를 다 썼습니다. 상점에서 구매하세요!');
+        if (addSystemMsg) addSystemMsg('미끼를 다 썼습니다. 상점에서 구매하세요!', 'C');
+        else showDialog('미끼를 다 썼습니다. 상점에서 구매하세요!');
         state.debug.fishingStartGate = 'NO_BAIT_STOCK';
         return;
       }
@@ -915,17 +1342,24 @@ export const ActionSystem = {
         // ??노뻻 ??뺣즲 (strict: must face water)
         if (ctx.hasEquippedRod) {
           if (ctx.frontIsWater) {
-             state.isFishing = true;
-             player.isFishing = true; // ??볦퍟???怨밴묶 ??쇱젟
-             QuestSystem.emitQuestEvent(state, 'START_FISHING', { nearWater: ctx.nearWater, frontIsWater: ctx.frontIsWater });
-             showDialog(t('msg.fishing.started'));
-             state.debug.fishingStartGate = "OK";
+            if (state.stamina < 3) {
+              if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
+              else showDialog('체력이 부족합니다. 야전침대에서 휴식하세요.');
+              return;
+            }
+            state.stamina = Math.max(0, state.stamina - 3);
+            state.uiDirty = true;
+            state.isFishing = true;
+            player.isFishing = true; // ??볦퍟???怨밴묶 ??쇱젟
+            QuestSystem.emitQuestEvent(state, 'START_FISHING', { nearWater: ctx.nearWater, frontIsWater: ctx.frontIsWater });
+            showDialog(t('msg.fishing.started'));
+            state.debug.fishingStartGate = "OK";
           } else if (ctx.nearWater) {
-             showDialog(t('msg.fishing.faceWater'));
-             state.debug.fishingStartGate = "NOT_FACING_WATER";
+            showDialog(t('msg.fishing.faceWater'));
+            state.debug.fishingStartGate = "NOT_FACING_WATER";
           } else {
-             showDialog(t('msg.fishing.cantHere'));
-             state.debug.fishingStartGate = "NOT_NEAR_WATER";
+            showDialog(t('msg.fishing.cantHere'));
+            state.debug.fishingStartGate = "NOT_NEAR_WATER";
           }
         }
       }
@@ -972,6 +1406,29 @@ export const QuestSystem = {
     return quest.steps.every((step) => Number(progress[step.id] || 0) >= Math.max(1, Number(step.count || 1)));
   },
 
+  validateSpatialQuests(state, map) {
+    if (!state.quests || !state.quests.activeQuestIds || !state.quests.activeQuestIds.length) return false;
+    let changed = false;
+    for (const questId of state.quests.activeQuestIds.slice()) {
+      const quest = QUESTS_BY_ID[questId];
+      if (!quest) continue;
+      const progress = state.quests.stepProgress[questId] || {};
+      const step = getCurrentStep(quest, progress);
+      if (step && step.type === 'MOVE' && step.targetPOI) {
+        if (isNearPOI(map, state.playerPos, step.targetPOI)) {
+          if (this.completeStep(state, questId, step.id)) {
+            changed = true;
+            if (this.isQuestComplete(state, questId)) {
+              if (this.completeQuest(state, questId)) changed = true;
+            }
+          }
+        }
+      }
+    }
+    if (changed) state.quests._dirty = true;
+    return changed;
+  },
+
   completeQuest(state, questId) {
     ensureQuestState(state);
     const quest = QUESTS_BY_ID[questId];
@@ -981,7 +1438,17 @@ export const QuestSystem = {
     if (!state.quests.completedQuestIds.includes(questId)) state.quests.completedQuestIds.push(questId);
     if (Array.isArray(quest.rewards)) {
       quest.rewards.forEach((reward) => {
-        if (reward?.type === 'MONEY') state.money = (state.money || 0) + (reward.amount || 0);
+        if (reward?.type === 'MONEY') {
+          state.money = (state.money || 0) + (reward.amount || 0);
+        } else if (reward?.type === 'ITEM') {
+          if (!Array.isArray(state.inventory)) state.inventory = [];
+          const count = reward.count || 1;
+          invAdd(state.inventory, reward.itemId, count);
+          if (isTrapItem(reward.itemId)) {
+            if (!Array.isArray(state.trapInventory)) state.trapInventory = [];
+            state.trapInventory.push({ itemId: reward.itemId, capacity: getTrapCapacityByItem(reward.itemId), fishes: [] });
+          }
+        }
       });
     }
     if (Array.isArray(state.quests.newlyCompletedQueue)) {
@@ -995,10 +1462,13 @@ export const QuestSystem = {
   emitQuestEvent(state, eventType, payload = {}) {
     ensureQuestState(state);
     if (!eventType) return false;
+    if (!state.quests.accepted) state.quests.accepted = {};
     let changed = false;
     for (const questId of state.quests.activeQuestIds.slice()) {
       const quest = QUESTS_BY_ID[questId];
       if (!quest) continue;
+      // 수락되지 않은 퀘스트는 이벤트 진행을 무시함 (단, autoAccept는 예외)
+      if (!state.quests.accepted[questId] && !quest.autoAccept) continue;
       const progress = state.quests.stepProgress[questId] || {};
       const step = getCurrentStep(quest, progress);
       if (!step) {
@@ -1043,5 +1513,41 @@ export const QuestSystem = {
 
   getQuestList() {
     return QUESTS.slice();
+  }
+};
+
+// ========================================
+// FarmingSystem — 작물 성장 엔진 (Timestamp 기반)
+// ========================================
+export const FarmingSystem = {
+  update(state, dt = 0) {
+    if (!state.farm) return;
+    const now = Date.now();
+    const STAGE_DURATION = 60000; // 1단계당 60초 (테스트용)
+
+    for (const key in state.farm) {
+      const [fx, fy] = key.split(',').map(Number);
+
+      // [긴급 패치] 현재 지정된 텃밭 구역이 아닌 곳의 밭(고스트 밭) 자동 삭제
+      if (!isFarmableTile(fx, fy)) {
+        delete state.farm[key];
+        state.uiDirty = true;
+        continue;
+      }
+
+      const crop = state.farm[key];
+      if (!crop.cropId || crop.stage >= 3 || !crop.plantedAt) continue;
+
+      // 물을 줬다면 성장 속도 30% 가속
+      const speedMult = crop.waterLevel > 0 ? 1.3 : 1.0;
+      const elapsed = (now - crop.plantedAt) * speedMult;
+
+      const newStage = Math.min(3, 1 + Math.floor(elapsed / STAGE_DURATION));
+      if (newStage > crop.stage) {
+        crop.stage = newStage;
+        crop.waterLevel = 0; // 다음 단계 진입 시 수분 증발
+        state.uiDirty = true;
+      }
+    }
   }
 };
