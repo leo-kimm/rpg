@@ -42,6 +42,15 @@ export class Input {
     return keyCodes.some(code => this.keys[code] && !this.prevKeys[code]);
   }
 
+  // [New] 액션 소모 (이후의 체크에서는 눌리지 않은 것으로 취급)
+  consumeAction(actionName) {
+    const keyCodes = INPUT_MAP[actionName];
+    if (!keyCodes) return;
+    keyCodes.forEach(code => {
+      this.keys[code] = false;
+    });
+  }
+
   // 하위 호환성 및 디버깅용 (직접 키 코드 체크)
   isDown(code) {
     return !!this.keys[code];
