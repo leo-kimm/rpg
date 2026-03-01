@@ -504,10 +504,66 @@ export class Player {
     }
   }
 
-  render(ctx) {
+  /**
+   * 밀치기 피격 처리 — 지정 방향으로 1타일 강제 이동 + 슬라이드 애니메이션.
+   * @param {string} direction - 'up' | 'down' | 'left' | 'right'
+   */
+  applyPush(direction) {
+    const dirMap = {
+      up: { dx: 0, dy: -1 },
+      down: { dx: 0, dy: 1 },
+      left: { dx: -1, dy: 0 },
+      right: { dx: 1, dy: 0 }
+    };
+    const d = dirMap[direction];
+    if (!d) return;
+
+    this._slideFrom = { x: this.renderX, y: this.renderY };
+    this._slideStart = Date.now();
+    this.isPushed = true;
+
+    const newTx = this.tx + d.dx;
+    const newTy = this.ty + d.dy;
+    this.tx = newTx;
+    this.ty = newTy;
+    this.renderX = newTx * TILE_SIZE;
+    this.renderY = newTy * TILE_SIZE;
+
+    // 0.2초 후 isPushed 자동 해제
+    setTimeout(() => { this.isPushed = false; }, 200);
+  }
+
+  render(ctx, overrideColor = null) {
+    // [M8] 밀치기 피격 슬라이드 애니메이션 (0.2초 Lerp)
+    if (this._slideFrom && this._slideStart) {
+      const elapsed = Date.now() - this._slideStart;
+      const duration = 200;
+      if (elapsed < duration) {
+        const t = elapsed / duration;
+        this.renderX = this._slideFrom.x + (this.renderX - this._slideFrom.x) * t;
+        this.renderY = this._slideFrom.y + (this.renderY - this._slideFrom.y) * t;
+      } else {
+        this._slideFrom = null;
+        this._slideStart = null;
+      }
+    }
+
     const cx = this.renderX;
     const cy = this.renderY;
     const size = TILE_SIZE;
+    const bodyColor = overrideColor || COLORS.PLAYER;
+
+    ctx.save();
+    let rx = cx;
+    let ry = cy;
+
+    // [Phase 4-2 / 4-3] 수면 중이면 90도 회전 및 Y-Sort 보정
+    if (this.isSleeping) {
+      ctx.translate(cx + size / 2, cy + size / 2);
+      ctx.rotate(Math.PI / 2);
+      ctx.translate(-(cx + size / 2), -(cy + size / 2));
+      ry += 4; // 눕혔을 때 바닥에 좀 더 밀착
+    }
 
     ctx.fillStyle = 'rgba(0,0,0,0.2)';
     ctx.beginPath();
@@ -520,7 +576,7 @@ export class Player {
       ctx.fillRect(cx + 8, baseY + 2, 16, 12);
       ctx.fillStyle = COLORS.PLAYER_OUTLINE;
       ctx.fillRect(cx + 8, baseY, 16, 5);
-      ctx.fillStyle = COLORS.PLAYER;
+      ctx.fillStyle = bodyColor;
       ctx.fillRect(cx + 9, baseY + 13, 14, 9);
       ctx.fillStyle = COLORS.PLAYER_OUTLINE;
       ctx.fillRect(cx + 10, baseY + 22, 4, 2);
@@ -577,15 +633,15 @@ export class Player {
       return;
     }
 
-    const bounce = this.walkFrame === 1 ? -2 : 0;
-    ctx.fillStyle = COLORS.PLAYER;
-    ctx.fillRect(cx + 8, cy + 12 + bounce, 16, 14);
+    const bounce = (this.walkFrame === 1 && !this.isSleeping) ? -2 : 0;
+    ctx.fillStyle = bodyColor;
+    ctx.fillRect(rx + 8, ry + 12 + bounce, 16, 14);
     ctx.fillStyle = '#ffccaa';
-    ctx.fillRect(cx + 6, cy + 2 + bounce, 20, 14);
+    ctx.fillRect(rx + 6, ry + 2 + bounce, 20, 14);
     ctx.fillStyle = COLORS.PLAYER_OUTLINE;
-    ctx.fillRect(cx + 6, cy + bounce, 20, 6);
-    ctx.fillRect(cx + 4, cy + 4 + bounce, 2, 6);
-    ctx.fillRect(cx + 26, cy + 4 + bounce, 2, 6);
+    ctx.fillRect(rx + 6, ry + bounce, 20, 6);
+    ctx.fillRect(rx + 4, ry + 4 + bounce, 2, 6);
+    ctx.fillRect(rx + 26, ry + 4 + bounce, 2, 6);
 
     ctx.fillStyle = '#2c3e50';
     let eyeOffsetX = 0;
@@ -593,8 +649,28 @@ export class Player {
     if (this.facing === 'right') eyeOffsetX = 2;
 
     if (this.facing !== 'up') {
-      ctx.fillRect(cx + 10 + eyeOffsetX, cy + 8 + bounce, 2, 2);
-      ctx.fillRect(cx + 20 + eyeOffsetX, cy + 8 + bounce, 2, 2);
+      if (this.isSleeping) {
+        // [Phase 4-2] 감은 눈
+        ctx.fillRect(rx + 9 + eyeOffsetX, ry + 9 + bounce, 4, 1);
+        ctx.fillRect(rx + 19 + eyeOffsetX, ry + 9 + bounce, 4, 1);
+      } else {
+        ctx.fillRect(rx + 10 + eyeOffsetX, ry + 8 + bounce, 2, 2);
+        ctx.fillRect(rx + 20 + eyeOffsetX, ry + 8 + bounce, 2, 2);
+      }
+    }
+
+    // ==== [추가] 수면 중일 때 이불 덮기 ====
+    if (this.isSleeping) {
+      // 전달받은 스타일이 없으면 야전 침대를 기본값(Fallback)으로 사용
+      const style = this.bedStyle || { fold: '#5a5a5a', body: '#2c2c2c' };
+
+      // 1. 이불 상단 접힌 부분
+      ctx.fillStyle = style.fold; 
+      ctx.fillRect(rx + 1, ry + 11, 30, 5); 
+
+      // 2. 이불 본체
+      ctx.fillStyle = style.body; 
+      ctx.fillRect(rx + 1, ry + 16, 30, 18);
     }
 
     if (this.isFishing) {
@@ -622,6 +698,8 @@ export class Player {
       ctx.arc(rodEndX, rodEndY + (Math.sin(Date.now() / 200) * 2), 3, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    ctx.restore();
   }
 }
 export class Pet {
