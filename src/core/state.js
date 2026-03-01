@@ -4,7 +4,15 @@ export function createInitialState() {
     day: 1,
     time: 0.5,
     money: 0,
-    inventory: ['fishing_rod', 'starter_bag'],
+    stamina: 100,
+    maxStamina: 100,
+    furniture: [],
+    houses: [],
+    buildTarget: null,
+    inventory: [
+      { itemId: 'fishing_rod', count: 1 },
+      { itemId: 'starter_bag', count: 1 }
+    ],
     bags: {
       starter_bag: {
         capacity: 10,
@@ -21,7 +29,9 @@ export function createInitialState() {
       bagId: 'starter_bag',
       baitId: null,
       chairId: null,
-      trapId: null
+      trapId: null,
+      activeToolId: 'fishing_rod',   // 범용 도구 슬롯
+      activeSubItemId: null           // 범용 소모품 슬롯 (씨앗, 미끼 등)
     },
     seat: {
       isSeated: false,
@@ -35,6 +45,7 @@ export function createInitialState() {
     trapInventory: [],
     equippedToolId: null,
     equippedItem: 'fishing_rod',
+    farm: {},  // Key: "x,y", Value: { cropId, stage, plantedAt, waterLevel }
     lastCatch: null,
     ownedPetIds: [],
     selectedPetId: null,
