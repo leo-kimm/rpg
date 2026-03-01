@@ -3,19 +3,34 @@ export const CANVAS_W = 640;
 export const CANVAS_H = 480;
 
 export const INPUT_MAP = {
+  // 이동 키: 방향키 단독
   MOVE_UP: ['ArrowUp'],
   MOVE_DOWN: ['ArrowDown'],
   MOVE_LEFT: ['ArrowLeft'],
   MOVE_RIGHT: ['ArrowRight'],
-  INTERACT: ['KeyE'],
+
+  // 상호작용: Space바 단독
+  INTERACT: ['Space'],
+
+  // 도구 및 특수 액션
+  USE_TOOL: ['KeyF'],      // 낚시
+  TOGGLE_SEAT: ['KeyS'],   // 좌석
+  PLACE_TRAP: ['KeyD'],    // 통발 설치/회수
+
+  // 이모티콘 (1~4 숫자키)
+  EMOJI_1: ['Digit1'],     // ❤️ 하트
+  EMOJI_2: ['Digit2'],     // 😄 웃음
+  EMOJI_3: ['Digit3'],     // 😢 슬픔
+  EMOJI_4: ['Digit4'],     // ❗ 느낌표
+
+  // 시스템 및 UI 제어
   START: ['Enter', 'Space'],
-  MENU: ['Tab', 'Escape'],
+  MENU: ['Tab'],
   CANCEL: ['Escape'],
   INVENTORY: ['KeyI'],
   QUEST_LOG: ['KeyQ'],
-  USE_TOOL: ['KeyF'],
-  TOGGLE_SEAT: ['KeyS'],
-  DEBUG_TOGGLE: ['F1']
+  DEBUG_TOGGLE: ['F1'],
+  INSTALL_HOUSE: ['KeyH']
 };
 
 export const MODES = {
@@ -23,7 +38,9 @@ export const MODES = {
   EXPLORE: 'EXPLORE',
   MENU: 'MENU',
   DIALOG: 'DIALOG',
-  SHOP: 'SHOP'
+  SHOP: 'SHOP',
+  BUILD: 'BUILD',
+  HOUSING_EDIT: 'HOUSING_EDIT'
 };
 
 export const COLORS = {
@@ -50,4 +67,3 @@ export const FISH_RARITY_MULTIPLIERS = {
   S: 2.5,
   SS: 4.0
 };
-
