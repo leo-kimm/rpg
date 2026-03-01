@@ -1,7 +1,8 @@
-﻿import { MODES, COLORS } from './constants.js';
+import { MODES, COLORS } from './constants.js';
 import { PETS } from '../data/pets.js';
 import { Time } from './time.js';
 import { t } from './i18n.js';
+import { invHas, invCount } from './inventoryHelper.js';
 // ?뚯씪 ?곷떒 import 異붽?
 import { ITEMS } from '../data/items.js';
 import { QUESTS, QUESTS_BY_ID } from '../data/quests.js';
@@ -36,7 +37,8 @@ const el = {
   btnNew: document.getElementById('btn-newgame'),
 
   dialogText: document.getElementById('dialog-text'),
-  uiLayer: document.getElementById('ui-layer')
+  uiLayer: document.getElementById('ui-layer'),
+  systemLog: document.getElementById('system-log')
 };
 
 // [NEW] ?곹깭 異붿쟻???꾪븳 罹먯떆 (遺덊븘?뷀븳 DOM ?낅뜲?댄듃 諛⑹?)
@@ -48,6 +50,14 @@ let _shopSelectedKey = null;
 let _shopPurchaseCount = 1;
 let _questToastTimer = null;
 const _iconCache = new Map();
+
+const RARITY_COLORS = {
+  'C': '#b0bec5',
+  'B': '#3498db',
+  'A': '#9b59b6',
+  'S': '#f1c40f',
+  'SS': '#e74c3c'
+};
 
 function ensureUiState(state) {
   if (!state.ui || typeof state.ui !== 'object') {
@@ -71,9 +81,106 @@ function getPetEffectText(pet) {
 }
 
 export const UI = {
+  _sysAggMap: new Map(), // aggregator: key → { div, count, timer }
+
+  /**
+   * 시스템 메시지 출력 (Aggregator + 오브젝트 풀링 적용)
+   * @param {string} text - 출력할 메시지
+   * @param {string} rarity - 아이템 등급 (C, B, A, S, SS) 또는 색상 코드
+   */
+  addSystemMessage(text, rarity = 'C') {
+    if (!el.systemLog) return;
+
+    const isColorCode = rarity.startsWith('#');
+    const color = isColorCode ? rarity : (RARITY_COLORS[rarity] || '#ffffff');
+    const rarityLabel = isColorCode ? '!' : rarity;
+    const aggKey = `${rarityLabel}::${text}`;
+
+    // Aggregator: 동일 메시지가 2초 내 재등장 시 수량 합산
+    const existing = this._sysAggMap.get(aggKey);
+    if (existing && existing.div.parentNode) {
+      existing.count++;
+      existing.div.innerHTML = `<span class="sys-rarity" style="color: ${color}">[${rarityLabel}]</span> ${text} <b>x${existing.count}</b>`;
+      clearTimeout(existing.fadeTimer);
+      existing.fadeTimer = setTimeout(() => {
+        existing.div.classList.add('fade-out');
+        setTimeout(() => {
+          if (existing.div.parentNode) existing.div.parentNode.removeChild(existing.div);
+          this._sysAggMap.delete(aggKey);
+        }, 500);
+      }, 4000);
+      return;
+    }
+
+    const div = document.createElement('div');
+    div.className = `sys-msg rarity-${rarityLabel}`;
+    div.style.borderRight = `4px solid ${color}`;
+    div.style.background = 'rgba(20, 20, 20, 0.1)';
+    div.style.textShadow = '1px 1px 2px #000, -1px -1px 2px #000';
+    div.innerHTML = `<span class="sys-rarity" style="color: ${color}">[${rarityLabel}]</span> ${text}`;
+
+    el.systemLog.appendChild(div);
+
+    // 메시지 노드 개수 제한 (6개 초과 시 가장 오래된 것 제거)
+    while (el.systemLog.childElementCount > 6) {
+      const oldest = el.systemLog.firstElementChild;
+      if (oldest) el.systemLog.removeChild(oldest);
+    }
+
+    const fadeTimer = setTimeout(() => {
+      div.classList.add('fade-out');
+      setTimeout(() => {
+        if (div.parentNode) div.parentNode.removeChild(div);
+        this._sysAggMap.delete(aggKey);
+      }, 500);
+    }, 4000);
+
+    this._sysAggMap.set(aggKey, { div, count: 1, fadeTimer });
+
+    // 2초 후 어그리게이터 엔트리 만료 (이후 동일 메시지는 새 노드 생성)
+    setTimeout(() => {
+      this._sysAggMap.delete(aggKey);
+    }, 2000);
+  },
+
+  // M2: 퀘스트 목표 지점 조회 (POI 없는 퀘스트 Fallback 포함)
+  getQuestTargetPos(state, step) {
+    if (!step) return { x: state?.playerPos?.tx || 0, y: state?.playerPos?.ty || 0, radius: 0, label: '자유 진행', hint: '특정 목표 지점 없음' };
+
+    const POI_POSITIONS = {
+      'shop': { x: 28, y: 2 },
+      'fish_market': { x: 27, y: 8 },
+      'lake': { x: 8, y: 11 },
+      'forest': { x: 3, y: 3 },
+      'center': { x: 15, y: 7 }
+    };
+
+    const poi = step.targetPOI;
+    if (poi && POI_POSITIONS[poi]) {
+      return {
+        x: POI_POSITIONS[poi].x,
+        y: POI_POSITIONS[poi].y,
+        radius: 3,
+        label: step.text || '',
+        hint: step.targetHint || ''
+      };
+    }
+
+    // Fallback: POI가 없는 자유 진행형 퀘스트
+    return { x: state?.playerPos?.tx || 0, y: state?.playerPos?.ty || 0, radius: 0, label: '자유 진행', hint: '특정 목표 지점 없음' };
+  },
+
   init(callbacks) {
-    el.btnNew.onclick = callbacks.onNewGame;
-    el.btnContinue.onclick = callbacks.onContinue;
+    el.btnNew.onclick = (e) => {
+      e.target.blur();
+      document.getElementById('game')?.focus();
+      callbacks.onNewGame();
+    };
+    el.btnContinue.onclick = (e) => {
+      e.target.blur();
+      document.getElementById('game')?.focus();
+      callbacks.onContinue();
+    };
     el.btnWalk.onclick = () => callbacks.onWalkPet(this.selectedPetId);
     el.btnStop.onclick = callbacks.onStopWalk;
 
@@ -119,6 +226,16 @@ export const UI = {
         </div>`;
       el.uiLayer.appendChild(modal);
     }
+
+    // ui.js의 init(callbacks) 함수 맨 하단에 추가
+    if (el.questTracker) {
+      el.questTracker.style.position = 'absolute';
+      el.questTracker.style.top = '140px'; // 미니맵 컨테이너 바로 아래
+      el.questTracker.style.left = '10px';
+      el.questTracker.style.right = 'auto'; // 기존 우측 정렬 해제
+      el.questTracker.style.textAlign = 'left';
+      el.questTracker.style.zIndex = '90';
+    }
   },
 
   setStartScreen(visible, canContinue) {
@@ -134,21 +251,29 @@ export const UI = {
 
   updateHUD(state, debugInfo = null) {
     // [CHANGED] 媛믪씠 蹂?덉쓣 ?뚮쭔 ?띿뒪???낅뜲?댄듃 (?뚮뜑留?理쒖쟻??
-    if (_lastDay !== state.day) {
-      el.day.textContent = state.day;
+    // --- 기존의 _lastDay 체크와 state.time 바인딩 코드를 아래로 전면 교체 ---
+    const timeIcon = Time.isNight(state) ? '🌙' : '☀️';
+    if (_lastDay !== state.day || state._lastTimeIcon !== timeIcon) {
+      el.day.textContent = `${timeIcon} ${state.day}`;
       _lastDay = state.day;
+      state._lastTimeIcon = timeIcon;
     }
 
     if (_lastMoney !== state.money) {
-        // [NEW] ?덉씠 ?ㅻ? ???レ옄 ?좊땲硫붿씠???④낵 (媛꾨떒 踰꾩쟾)
-        el.money.style.color = state.money > _lastMoney ? '#f1c40f' : '#ecf0f1';
-        el.money.textContent = state.money;
-        setTimeout(() => el.money.style.color = '#ecf0f1', 200);
-        _lastMoney = state.money;
+      // [NEW] ?덉씠 ?ㅻ? ???レ옄 ?좊땲硫붿씠???④낵 (媛꾨떒 踰꾩쟾)
+      el.money.style.color = state.money > _lastMoney ? '#f1c40f' : '#ecf0f1';
+      el.money.textContent = state.money;
+      setTimeout(() => el.money.style.color = '#ecf0f1', 200);
+      _lastMoney = state.money;
     }
-    
-    // Time bar??留ㅻ걚?ъ썙???섎?濡?留ㅻ쾲 ?낅뜲?댄듃
-    el.timeBar.style.width = `${state.time * 100}%`;
+
+    // 시간 바를 스태미나 바로 강제 덮어쓰기 (기존 그라데이션 제거를 위해 background 속성 덮어쓰기)
+    const currentStamina = typeof state.stamina === 'number' ? state.stamina : 100;
+    const maxStamina = typeof state.maxStamina === 'number' ? state.maxStamina : 100;
+    const staminaRatio = Math.max(0, Math.min(1, currentStamina / maxStamina));
+    el.timeBar.style.width = `${staminaRatio * 100}%`;
+    el.timeBar.style.background = currentStamina < 20 ? '#e74c3c' : '#2ecc71';
+    // -------------------------------------------------------------------
     this.renderQuestTracker(state);
     this.updateMinimap(state, WORLD_MAP);
     this.flushQuestNotifications(state);
@@ -203,6 +328,11 @@ nearWater: ${debugInfo.nearWater}
     ensureUiState(state);
     el.petList.innerHTML = '';
 
+    // [PATCH] Ensure ownedPetIds is an array to prevent .forEach crash
+    if (!Array.isArray(state.ownedPetIds)) {
+      state.ownedPetIds = [];
+    }
+
     if (!state.selectedPetId && state.ownedPetIds.length > 0) {
       state.selectedPetId = state.ownedPetIds[0];
     }
@@ -214,16 +344,16 @@ nearWater: ${debugInfo.nearWater}
 
       const div = document.createElement('div');
       div.className = 'pet-slot';
-      
+
       // [CHANGED] ?ㅽ???吏곸젒 二쇱엯 ???CSS 蹂???쒖슜 沅뚯옣?섏?留? 
       // ?꾩옱???숈쟻 而щ윭 吏?먯쓣 ?꾪빐 ?좎??섎릺 洹몃┝???④낵 異붽?
       div.style.backgroundColor = pet.color || '#555';
-      div.style.boxShadow = `inset 0 0 10px rgba(0,0,0,0.5)`; 
-      
+      div.style.boxShadow = `inset 0 0 10px rgba(0,0,0,0.5)`;
+
       if (id === this.selectedPetId) {
         div.classList.add('selected');
         // [NEW] ?좏깮???レ? ?뚮몢由??됱긽????怨좎쑀 ?됱쑝濡?鍮쏅굹寃???
-        div.style.borderColor = '#fff'; 
+        div.style.borderColor = '#fff';
         div.style.transform = 'scale(1.1)';
       }
 
@@ -299,7 +429,7 @@ nearWater: ${debugInfo.nearWater}
   showDialog(text, onComplete = null) {
     el.dialog.classList.remove('hidden');
     el.dialogText.textContent = ""; // 珥덇린??
-    
+
     // 湲곗〈 ??댄븨 以묐떒
     if (_typewriterInterval) clearInterval(_typewriterInterval);
 
@@ -309,7 +439,7 @@ nearWater: ${debugInfo.nearWater}
     _typewriterInterval = setInterval(() => {
       el.dialogText.textContent += text.charAt(i);
       i++;
-      
+
       // ??댄븨 ?꾨즺 ??
       if (i > text.length - 1) {
         clearInterval(_typewriterInterval);
@@ -322,26 +452,30 @@ nearWater: ${debugInfo.nearWater}
   hideDialog() {
     el.dialog.classList.add('hidden');
     if (_typewriterInterval) {
-        clearInterval(_typewriterInterval);
-        _typewriterInterval = null;
+      clearInterval(_typewriterInterval);
+      _typewriterInterval = null;
     }
   },
 
   // ?쇄뼹??[?ш린?쒕???蹂듭궗?댁꽌 遺숈뿬?ｌ쑝?몄슂] ?쇄뼹??
-  
+
   toggleInventory(show, state) {
     // ?몃깽?좊━ ?붾㈃(DOM)???놁쑝硫??먮윭媛 ?????덉쑝誘濡?泥댄겕 (?덉쟾?μ튂)
     const invScreen = document.getElementById('inventory-screen');
     if (!invScreen) return;
-    
+
     invScreen.classList.toggle('hidden', !show);
     document.body.classList.toggle('modal-open', !!show);
-    
+
     if (show) {
-        ensureUiState(state);
-        state.ui.fishBagOpen = false;
-        state.ui.openBagId = null;
-        this.renderInventory(state);
+      // [추가] 시각적 겹침을 방지하기 위한 타 모달 강제 종료
+      if (el.pokedex) el.pokedex.classList.add('hidden');
+      if (el.quest) el.quest.classList.add('hidden');
+
+      ensureUiState(state);
+      state.ui.fishBagOpen = false;
+      state.ui.openBagId = null;
+      this.renderInventory(state);
     }
   },
 
@@ -356,11 +490,13 @@ nearWater: ${debugInfo.nearWater}
   renderQuestLog(state) {
     ensureUiState(state);
     if (!el.questList || !el.questDetail) return;
+    if (!state.quests) return;
+    if (!state.quests.accepted) state.quests.accepted = {};
     const questClose = document.getElementById('quest-close');
     if (questClose) {
+      questClose.onclick = null;
       questClose.onclick = () => {
-        this.toggleQuestLog(false, state);
-        state.mode = MODES.EXPLORE;
+        if (window.GameController) window.GameController.processCloseUI();
       };
     }
     const activeIds = Array.isArray(state?.quests?.activeQuestIds) ? state.quests.activeQuestIds : [];
@@ -378,18 +514,76 @@ nearWater: ${debugInfo.nearWater}
     ordered.forEach((entry) => {
       const quest = QUESTS_BY_ID[entry.id];
       if (!quest) return;
-      const row = document.createElement('button');
-      row.type = 'button';
+      const isAccepted = state.quests.accepted[quest.id] || quest.autoAccept;
+      const row = document.createElement('div');
       row.className = `quest-row${state.ui.selectedQuestId === quest.id ? ' selected' : ''}`;
-      const badge = entry.status === 'ACTIVE' ? '[진행중]' : entry.status === 'DONE' ? '[완료]' : '[잠김]';
-      row.textContent = `${badge} ${quest.title}`;
-      row.onclick = () => {
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.justifyContent = 'space-between';
+      row.style.gap = '8px';
+
+      const titleBtn = document.createElement('button');
+      titleBtn.type = 'button';
+      titleBtn.className = 'quest-title-btn';
+      titleBtn.style.flex = '1';
+      titleBtn.style.textAlign = 'left';
+      titleBtn.style.background = 'transparent';
+      titleBtn.style.border = 'none';
+      titleBtn.style.color = 'inherit';
+      titleBtn.style.cursor = 'pointer';
+      titleBtn.style.padding = '6px 4px';
+      const statusBadge = entry.status === 'DONE' ? '[완료]' : isAccepted ? '[진행중]' : '[수락 대기]';
+      titleBtn.textContent = `${statusBadge} ${quest.title}`;
+      titleBtn.onclick = () => {
         state.ui.selectedQuestId = quest.id;
         this.renderQuestLog(state);
       };
+      row.appendChild(titleBtn);
+
+      if (entry.status === 'ACTIVE' && !isAccepted) {
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'btn btn-accept';
+        acceptBtn.style.padding = '4px 12px';
+        acceptBtn.style.fontSize = '12px';
+        acceptBtn.style.background = '#f1c40f';
+        acceptBtn.style.color = '#000';
+        acceptBtn.style.border = 'none';
+        acceptBtn.style.borderRadius = '4px';
+        acceptBtn.style.cursor = 'pointer';
+        acceptBtn.textContent = '수락';
+        acceptBtn.onclick = (e) => {
+          e.stopPropagation();
+          state.quests.accepted[quest.id] = true;
+          this.addSystemMessage(`[${quest.title}] 퀘스트를 수락했습니다.`, '#f1c40f');
+          this.renderQuestLog(state);
+          this.updateQuestTracker(state);
+        };
+        row.appendChild(acceptBtn);
+      }
+
       el.questList.appendChild(row);
     });
     this.renderQuestDetail(state, state.ui.selectedQuestId);
+    this.updateQuestTracker(state);
+  },
+
+  updateQuestTracker(state) {
+    const tracker = el.questTracker || document.getElementById('quest-tracker');
+    if (!tracker || !state?.quests) return;
+
+    const activeIds = state.quests.activeQuestIds || [];
+    let displayQuestId = activeIds.find(id => state.quests.accepted?.[id] || QUESTS_BY_ID[id]?.autoAccept);
+    if (!displayQuestId && activeIds.length > 0) displayQuestId = activeIds[0];
+
+    if (displayQuestId && QUESTS_BY_ID[displayQuestId]) {
+      const q = QUESTS_BY_ID[displayQuestId];
+      const isAccepted = state.quests.accepted?.[q.id] || q.autoAccept;
+      const statusText = isAccepted ? '[진행중]' : '[수락 대기]';
+      tracker.innerHTML = `<strong>다음 목표:</strong> ${statusText} ${q.title}`;
+      tracker.style.display = '';
+    } else {
+      tracker.innerHTML = `<strong>다음 목표:</strong> 현재 가능한 퀘스트가 없습니다.`;
+    }
   },
 
   renderQuestDetail(state, questId) {
@@ -399,9 +593,15 @@ nearWater: ${debugInfo.nearWater}
       el.questDetail.innerHTML = '<div class="quest-empty">퀘스트를 선택하세요.</div>';
       return;
     }
+
+    if (!state.quests) state.quests = {};
+    if (!state.quests.accepted) state.quests.accepted = {};
+
     const progress = state?.quests?.stepProgress?.[quest.id] || {};
     const completedIds = Array.isArray(state?.quests?.completedQuestIds) ? state.quests.completedQuestIds : [];
     const isDone = completedIds.includes(quest.id);
+    const isAccepted = state.quests.accepted[quest.id] || quest.autoAccept;
+
     const rewards = Array.isArray(quest.rewards)
       ? quest.rewards.map((r) => r?.type === 'MONEY' ? `${r.amount || 0}G` : `${r.type || '-'}`).join(', ')
       : '-';
@@ -412,13 +612,38 @@ nearWater: ${debugInfo.nearWater}
       const meter = need > 1 ? ` (${cur}/${need})` : '';
       return `<li class="${done ? 'done' : ''}">${done ? '☑' : '☐'} ${step.text}${meter}</li>`;
     }).join('');
+
     el.questDetail.innerHTML = `
       <h3>${quest.title}${isDone ? ' - 완료!' : ''}</h3>
       <p class="quest-desc">${quest.desc || ''}</p>
       <div class="quest-steps-title">진행 단계</div>
       <ul class="quest-steps">${stepsHtml}</ul>
       <div class="quest-reward">보상: ${rewards}</div>
+      <div id="quest-action-container" style="margin-top: 20px; text-align: right;"></div>
     `;
+
+    const actionContainer = el.questDetail.querySelector('#quest-action-container');
+    if (!isDone && !isAccepted) {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-accept';
+      btn.textContent = '퀘스트 수락';
+      btn.style.padding = '8px 16px';
+      btn.style.backgroundColor = '#27ae60';
+      btn.style.color = 'white';
+      btn.style.border = 'none';
+      btn.style.borderRadius = '6px';
+      btn.style.cursor = 'pointer';
+      btn.style.fontSize = '14px';
+      btn.onclick = () => {
+        state.quests.accepted[quest.id] = true;
+        this.addSystemMessage(`[${quest.title}] 퀘스트를 수락했습니다.`, '#f1c40f');
+        this.renderQuestLog(state);
+        this.updateQuestTracker(state);
+      };
+      actionContainer.appendChild(btn);
+    } else if (!isDone && isAccepted) {
+      actionContainer.innerHTML = '<span style="color:#2ecc71; font-weight:bold;">[진행 중]</span>';
+    }
   },
 
   renderQuestTracker(state) {
@@ -440,6 +665,16 @@ nearWater: ${debugInfo.nearWater}
     const meter = need > 1 ? ` (${cur}/${need})` : '';
     el.questTracker.textContent = `퀘스트: ${quest.title} - ${currentStep.text}${meter}`;
     el.questTracker.classList.remove('hidden');
+
+    // [절대 방어] CSS 무력화 및 좌측 상단 강제 이동
+    el.questTracker.style.cssText = `
+    position: fixed !important;
+    top: 130px !important;
+    left: 10px !important;
+    right: auto !important;
+    text-align: left !important;
+    z-index: 9999 !important;
+  `;
   },
 
   getQuestTargetPos(step, map) {
@@ -571,7 +806,7 @@ nearWater: ${debugInfo.nearWater}
     if (helperText) {
       const isFishingStart = currentStep?.type === 'EVENT' && currentStep?.target === 'START_FISHING';
       helperText.textContent = arrived
-        ? (isFishingStart ? '도착! F로 낚시 시작' : `${target.label} 도착! E로 상호작용`)
+        ? (isFishingStart ? '도착! F로 낚시 시작' : `${target.label} 도착! Space로 상호작용`)
         : `${target.label}${target.hint ? `(${target.hint})` : ''} 방향 ${distance}타일`;
     }
   },
@@ -588,7 +823,7 @@ nearWater: ${debugInfo.nearWater}
     if (!quest) return;
     state.ui.questNotifyOpen = true;
     state.ui.questNotifyPrevMode = state.mode;
-    state.mode = MODES.DIALOG;
+    if (window.GameController) window.GameController.changeMode(MODES.DIALOG);
     this.openModal(
       state,
       `퀘스트 완료: ${quest.title}`,
@@ -608,7 +843,7 @@ nearWater: ${debugInfo.nearWater}
         onClick: () => {
           if (modal) modal.classList.add('hidden');
           state.ui.modal = null;
-          state.mode = state.ui.questNotifyPrevMode || MODES.EXPLORE;
+          if (window.GameController) window.GameController.changeMode(state.ui.questNotifyPrevMode || MODES.EXPLORE);
           state.ui.questNotifyPrevMode = null;
           state.ui.questNotifyOpen = false;
         }
@@ -770,6 +1005,15 @@ nearWater: ${debugInfo.nearWater}
 
     if (item.type === 'FISH') {
       drawFishIcon(octx, item, size);
+    } else if (item.id === 'house_tent') {
+      octx.fillStyle = '#27ae60'; // 초록 텐트
+      octx.beginPath(); octx.moveTo(size / 2, size * 0.2); octx.lineTo(size * 0.8, size * 0.8); octx.lineTo(size * 0.2, size * 0.8); octx.fill();
+      octx.fillStyle = '#1e8449'; octx.fillRect(size * 0.4, size * 0.6, size * 0.2, size * 0.2); // 문
+    } else if (item.id === 'bed_camp') {
+      octx.fillStyle = '#34495e'; // 야전침대 프레임
+      octx.fillRect(size * 0.2, size * 0.3, size * 0.6, size * 0.4);
+      octx.fillStyle = '#bdc3c7'; // 베개
+      octx.fillRect(size * 0.25, size * 0.35, size * 0.15, size * 0.3);
     } else if (item.type === 'TOOL' && item.toolKind === 'FISHING_ROD') {
       drawRodIcon(octx, item, size);
     } else if (item.iconKind === 'CHAIR' || item.equipSlot === 'CHAIR') {
@@ -865,6 +1109,26 @@ nearWater: ${debugInfo.nearWater}
       }
     } else if (item.equipSlot === 'BAG' || item.iconKind === 'BAG_FISH') {
       drawBagIcon(octx, item, size);
+    } else if (item.toolKind === 'FARM_HOE') {
+      octx.fillStyle = '#7f8c8d';
+      octx.fillRect(size * 0.2, size * 0.2, size * 0.6, size * 0.3);
+      octx.fillStyle = '#d35400';
+      octx.fillRect(size * 0.45, size * 0.2, size * 0.1, size * 0.7);
+    } else if (item.toolKind === 'FARM_WATER') {
+      octx.fillStyle = '#bdc3c7';
+      octx.fillRect(size * 0.3, size * 0.4, size * 0.5, size * 0.5);
+      octx.strokeStyle = '#7f8c8d';
+      octx.beginPath(); octx.moveTo(size * 0.3, size * 0.6); octx.lineTo(size * 0.1, size * 0.4); octx.stroke();
+    } else if (item.toolKind === 'FARM_SEED') {
+      octx.fillStyle = '#8b4513';
+      octx.fillRect(size * 0.3, size * 0.4, size * 0.4, size * 0.5);
+      octx.fillStyle = '#2ecc71';
+      octx.fillRect(size * 0.45, size * 0.55, 4, 4);
+    } else if (item.id === 'crop_carrot') {
+      octx.fillStyle = '#e67e22';
+      octx.beginPath(); octx.moveTo(size * 0.3, size * 0.2); octx.lineTo(size * 0.7, size * 0.2); octx.lineTo(size * 0.5, size * 0.8); octx.fill();
+      octx.fillStyle = '#2ecc71';
+      octx.fillRect(size * 0.4, size * 0.1, size * 0.2, size * 0.1);
     } else {
       octx.fillStyle = '#95a5a6';
       octx.fillRect(size * 0.18, size * 0.18, size * 0.64, size * 0.64);
@@ -891,7 +1155,6 @@ nearWater: ${debugInfo.nearWater}
     }
     if (el.quest && !el.quest.classList.contains('hidden')) {
       this.toggleQuestLog(false, state);
-      state.mode = MODES.EXPLORE;
       return true;
     }
     return false;
@@ -987,9 +1250,13 @@ nearWater: ${debugInfo.nearWater}
     if (!shopList) return;
     const prevWrap = document.getElementById('shop-list-wrap');
     const prevScrollTop = prevWrap ? prevWrap.scrollTop : 0;
-    const shopMode = state?.shop?.mode === 'BUY' ? 'BUY' : 'SELL';
+    const shopMode = state?.shop?.mode || 'SELL';
     const shopTitle = document.querySelector('#shop-screen h2');
-    if (shopTitle) shopTitle.textContent = shopMode === 'BUY' ? '낚시용품점' : '바다코끼리 어시장';
+    const SHOP_TITLES = {
+      'BUY': '낚시용품점', 'SELL': '바다코끼리 어시장',
+      'BUY_FARM': '농사용품점', 'SELL_FARM': '황소불소 농시장'
+    };
+    if (shopTitle) shopTitle.textContent = SHOP_TITLES[shopMode] || '상점';
 
     shopList.innerHTML = '';
     if (moneyEl) moneyEl.textContent = state.money ?? 0;
@@ -1000,25 +1267,54 @@ nearWater: ${debugInfo.nearWater}
     };
 
     const entries = [];
+    const FARM_TOOL_KINDS = ['FARM_HOE', 'FARM_WATER', 'FARM_SEED'];
+
     if (shopMode === 'BUY') {
-      Object.values(ITEMS).filter(item => typeof item.buyPrice === 'number').forEach((item) => {
+      // 낚시용품점: 농기구 제외
+      Object.values(ITEMS).filter(item => typeof item.buyPrice === 'number' && !FARM_TOOL_KINDS.includes(item.toolKind)).forEach((item) => {
         const price = this.getComputedBuyPrice(item);
         entries.push({
-          key: `BUY:${item.id}`,
-          item,
-          price,
-          actionLabel: '구매',
+          key: `BUY:${item.id}`, item, price, actionLabel: '구매',
           subtitle: this.getItemEffect(item),
           onAction: (count = 1) => this.callbacks?.onBuyItem?.(item.id, count)
         });
       });
+    } else if (shopMode === 'BUY_FARM') {
+      // 농사용품점: 농기구/씨앗만
+      Object.values(ITEMS).filter(item => typeof item.buyPrice === 'number' && FARM_TOOL_KINDS.includes(item.toolKind)).forEach((item) => {
+        const price = this.getComputedBuyPrice(item);
+        entries.push({
+          key: `BUY:${item.id}`, item, price, actionLabel: '구매',
+          subtitle: this.getItemEffect(item) || item.desc || '',
+          onAction: (count = 1) => this.callbacks?.onBuyItem?.(item.id, count)
+        });
+      });
+    } else if (shopMode === 'SELL_FARM') {
+      // 농시장: 인벤토리 내 ETC 아이템(수확물) 판매
+      const inv = Array.isArray(state?.inventory) ? state.inventory : [];
+      inv.forEach((entry, idx) => {
+        const itemId = typeof entry === 'string' ? entry : entry.itemId;
+        const item = ITEMS[itemId];
+        if (!item || item.type !== 'ETC' || !item.sellPrice || item.isUnsellable) return;
+        const qty = typeof entry === 'object' ? (entry.count || 1) : 1;
+        const price = this.getComputedSellPrice(item);
+        entries.push({
+          key: `SELL_FARM:${itemId}:${idx}`, item, price: price * qty,
+          actionLabel: `판매 (${qty}개)`,
+          subtitle: `개당 ${price}G`,
+          entry: typeof entry === 'object' ? entry : { itemId, count: 1 },
+          onAction: (sellQty = 1) => this.callbacks?.onSellInventoryItem?.(itemId, Math.min(qty, sellQty))
+        });
+      });
     } else {
+      // 어시장 (SELL): 기존 로직 유지
       const equippedBagId = state?.equipment?.bagId || null;
       const equippedBag = equippedBagId && state?.bags ? state.bags[equippedBagId] : null;
       const fishList = Array.isArray(equippedBag?.fishes) ? equippedBag.fishes : [];
       const sellableEntries = fishList.map(toFishRecord).filter((entry) => {
         if (!entry) return false;
         const item = ITEMS[entry.itemId];
+        if (item && item.isUnsellable) return false;
         return !!item && (item.type === 'FISH' || typeof item.sellPrice === 'number' || typeof item.price === 'number');
       });
       sellableEntries.forEach((entry, idx) => {
@@ -1028,9 +1324,7 @@ nearWater: ${debugInfo.nearWater}
         const weightLabel = typeof weightBase === 'number' ? `${weightBase}g` : '-';
         const rarityLabel = entry.rarity ? ` [${entry.rarity}]` : '';
         entries.push({
-          key: `SELL:${entry.itemId}:${idx}`,
-          item,
-          price,
+          key: `SELL:${entry.itemId}:${idx}`, item, price,
           actionLabel: '판매',
           subtitle: `${rarityLabel} ${weightLabel}`.trim(),
           entry,
@@ -1049,9 +1343,7 @@ nearWater: ${debugInfo.nearWater}
           total += this.getComputedSellPrice(fishItem, entry);
         });
         entries.push({
-          key: `TRAP:${trap.itemId}:${idx}`,
-          item: trapItem,
-          price: total,
+          key: `TRAP:${trap.itemId}:${idx}`, item: trapItem, price: total,
           actionLabel: '어획 정산',
           subtitle: `통발 어획 ${fishes.length}마리`,
           onAction: () => this.callbacks?.onSellTrap?.(trap)
@@ -1066,7 +1358,7 @@ nearWater: ${debugInfo.nearWater}
     shopList.innerHTML = `
       <div class="shop-panel">
         <div class="shop-header">
-          <div class="shop-title">${shopMode === 'BUY' ? '낚시용품점' : '바다코끼리 어시장'}</div>
+          <div class="shop-title">${SHOP_TITLES[shopMode] || '상점'}</div>
           <div class="shop-header-right">
             <div class="shop-money-badge">${state.money ?? 0}G</div>
           </div>
@@ -1239,7 +1531,7 @@ nearWater: ${debugInfo.nearWater}
     const invList = document.getElementById('inventory-list');
     const legacyNameEl = document.getElementById('item-name');
     const legacyDescEl = document.getElementById('item-desc');
-    
+
     if (!invList) return;
     if (legacyNameEl) legacyNameEl.textContent = '';
     if (legacyDescEl) legacyDescEl.textContent = '';
@@ -1249,7 +1541,7 @@ nearWater: ${debugInfo.nearWater}
     const bags = (state?.bags && typeof state.bags === 'object') ? state.bags : {};
     const equippedBagId = state?.equipment?.bagId || null;
     const equippedBag = equippedBagId && bags[equippedBagId] ? bags[equippedBagId] : null;
-    if (state?.equipment?.baitId && !inv.includes(state.equipment.baitId)) state.equipment.baitId = null;
+    if (state?.equipment?.baitId && !invHas(inv, state.equipment.baitId)) state.equipment.baitId = null;
 
     const inferTab = (item) => {
       if (!item) return 'ETC';
@@ -1379,11 +1671,11 @@ nearWater: ${debugInfo.nearWater}
       return;
     }
 
-    const counts = new Map();
-    inv.forEach((itemId) => {
-      counts.set(itemId, (counts.get(itemId) || 0) + 1);
+    // 스택형 인벤토리 매핑
+    const stacked = inv.map(e => {
+      if (typeof e === 'string') return { itemId: e, qty: 1, item: ITEMS[e] || null };
+      return { itemId: e.itemId, qty: e.count || 1, item: ITEMS[e.itemId] || null };
     });
-    const stacked = Array.from(counts.entries()).map(([itemId, qty]) => ({ itemId, qty, item: ITEMS[itemId] || null }));
     const filteredItems = stacked.filter(({ item }) => {
       if (!item) return state.ui.invTab === 'ALL' || state.ui.invTab === 'ETC';
       if (item.type === 'FISH') return false;
@@ -1427,8 +1719,13 @@ nearWater: ${debugInfo.nearWater}
     const closeBtn = invList.querySelector('[data-action="close-inventory"]');
     if (closeBtn) {
       closeBtn.onclick = () => {
+        // 시각적 처리는 여기서 하고,
         this.toggleInventory(false, state);
-        state.mode = MODES.EXPLORE;
+
+        // 상태 처리는 main.js의 onCloseUI 콜백에 전적으로 맡깁니다.
+        if (this.callbacks && this.callbacks.onCloseUI) {
+          this.callbacks.onCloseUI();
+        }
       };
     }
 
@@ -1461,7 +1758,8 @@ nearWater: ${debugInfo.nearWater}
       const isEquippedBait = !!item && item.equipSlot === 'BAIT' && state?.equipment?.baitId === entry.itemId;
       const isEquippedChair = !!item && item.equipSlot === 'CHAIR' && state?.equipment?.chairId === entry.itemId;
       const isEquippedTrap = !!item && item.equipSlot === 'TRAP' && state?.equipment?.trapId === entry.itemId;
-      const isEquipped = isEquippedRod || isEquippedBag || isEquippedBait || isEquippedChair || isEquippedTrap;
+      const isEquippedTool = !!item && (item.equipSlot === 'FARM_TOOL' || item.toolKind === 'FARM_TOOL') && state?.equipment?.activeToolId === entry.itemId;
+      const isEquipped = isEquippedRod || isEquippedBag || isEquippedBait || isEquippedChair || isEquippedTrap || isEquippedTool;
       if (isEquipped) {
         slot.classList.add('equipped', `tier-${this.getVisualTier(item)}`);
         const badge = document.createElement('div');
@@ -1567,29 +1865,11 @@ nearWater: ${debugInfo.nearWater}
 
     const extra = document.createElement('div');
     extra.className = 'inv-detail-extra';
-    const baitId = state?.equipment?.baitId || null;
-    const baitCount = baitId && Array.isArray(state?.inventory) ? state.inventory.filter((id) => id === baitId).length : 0;
-    const equippedRod = state?.equipment?.rodId ? ITEMS[state.equipment.rodId] : null;
-    const equippedBagMeta = state?.equipment?.bagId ? ITEMS[state.equipment.bagId] : null;
-    const equippedChair = state?.equipment?.chairId ? ITEMS[state.equipment.chairId] : null;
-    const equippedTrap = state?.equipment?.trapId ? ITEMS[state.equipment.trapId] : null;
-    const equippedLine = document.createElement('div');
-    equippedLine.textContent = `현재 낚싯대: ${equippedRod ? this.getItemName(equippedRod) : '없음'} | 현재 가방: ${equippedBagMeta ? this.getItemName(equippedBagMeta) : '없음'} | 현재 미끼: ${baitId ? `${this.getItemName(baitId)} (${baitCount})` : '없음'} | 현재 의자: ${equippedChair ? this.getItemName(equippedChair) : '없음'} | 현재 통발: ${equippedTrap ? this.getItemName(equippedTrap) : '없음'}`;
-    extra.appendChild(equippedLine);
     const infoLine = document.createElement('div');
-    const equipState = item.equipSlot === 'ROD' ? (state?.equipment?.rodId === selected.itemId ? ' [장착중]' : '')
-      : item.equipSlot === 'BAG' ? (state?.equipment?.bagId === selected.itemId ? ' [장착중]' : '')
-      : item.equipSlot === 'BAIT' ? (state?.equipment?.baitId === selected.itemId ? ' [활성]' : '')
-      : item.equipSlot === 'CHAIR' ? (state?.equipment?.chairId === selected.itemId ? ' [장착중]' : '')
-      : item.equipSlot === 'TRAP' ? (state?.equipment?.trapId === selected.itemId ? ' [장착중]' : '')
-      : '';
-    const bagText = item.equipSlot === 'BAG'
-      ? ` ${t('ui.inventory.fishBagCapacity', { cur: Array.isArray(state?.bags?.[selected.itemId]?.fishes) ? state.bags[selected.itemId].fishes.length : 0, cap: state?.bags?.[selected.itemId]?.capacity || item.bagCapacity || item.capacity || 0 })}`
-      : '';
-    infoLine.textContent = `Type: ${item.type || 'ITEM'}${equipState}${bagText}`;
+    infoLine.textContent = `Type: ${item.type || 'ITEM'}`;
     extra.appendChild(infoLine);
     if (item.equipSlot === 'BAIT') {
-      const baitRemain = Array.isArray(state?.inventory) ? state.inventory.filter((id) => id === selected.itemId).length : 0;
+      const baitRemain = invCount(state?.inventory || [], selected.itemId);
       const rodId = state?.equipment?.rodId || state?.equippedToolId || null;
       const rodTier = rodId && ITEMS[rodId] ? (ITEMS[rodId].tier || 1) : 1;
       const rodCap = rodTier >= 3 ? 'SS' : rodTier >= 2 ? 'S' : 'A';
@@ -1689,6 +1969,60 @@ nearWater: ${debugInfo.nearWater}
       };
       actions.appendChild(equipTrapBtn);
     }
+    // [M3] 농기구(FARM_TOOL) 장착 버튼
+    if (item.equipSlot === 'FARM_TOOL' || item.toolKind === 'FARM_TOOL') {
+      const equipToolBtn = document.createElement('button');
+      equipToolBtn.type = 'button';
+      equipToolBtn.className = 'btn';
+      equipToolBtn.textContent = state?.equipment?.activeToolId === selected.itemId ? '해제' : '장착';
+      equipToolBtn.onclick = () => {
+        if (!state.equipment || typeof state.equipment !== 'object') state.equipment = {};
+        if (state.equipment.activeToolId === selected.itemId) {
+          state.equipment.activeToolId = null;
+        } else {
+          state.equipment.activeToolId = selected.itemId;
+          // 농기구 장착 시 낚싯대 해제 (도구 충돌 방지)
+          state.equipment.rodId = null;
+          state.equippedToolId = null;
+        }
+        this.callbacks?.onInventoryChanged?.();
+        this.renderInventory(state);
+      };
+      actions.appendChild(equipToolBtn);
+    }
+    // [M5/P4] 하우징 및 가구 (INSTALL, FURNITURE) 장착 및 배치 버튼
+    if (item.type === 'INSTALL' || item.type === 'FURNITURE') {
+      const equipHouseBtn = document.createElement('button');
+      equipHouseBtn.type = 'button';
+      equipHouseBtn.className = 'btn';
+      equipHouseBtn.textContent = item.type === 'FURNITURE' ? '배치' : (state?.equipment?.activeToolId === selected.itemId ? '장착 해제' : '설치 준비 (장착)');
+      equipHouseBtn.onclick = () => {
+        if (!state.equipment || typeof state.equipment !== 'object') state.equipment = {};
+
+        if (item.type === 'FURNITURE') {
+          // 에디터 모드로 진입하며 인벤토리 닫기
+          state.equipment.activeToolId = selected.itemId;
+          state.equipment.rodId = null;
+          state.equippedToolId = null;
+          state.mode = (typeof MODES !== 'undefined' && MODES.HOUSING_EDIT) ? MODES.HOUSING_EDIT : 'HOUSING_EDIT';
+          const invScreen = document.getElementById('inventory-screen');
+          if (invScreen) invScreen.classList.add('hidden');
+          if (typeof addSystemMsg === 'function') addSystemMsg('[가구 배치] 방향키로 위치를 잡고 Space로 배치하세요. (취소: ESC)', '#3498db');
+        } else {
+          // 일반 INSTALL 장착 토글
+          if (state.equipment.activeToolId === selected.itemId) {
+            state.equipment.activeToolId = null;
+          } else {
+            state.equipment.activeToolId = selected.itemId;
+            state.equipment.rodId = null; // 타 도구 충돌 방지
+            state.equippedToolId = null;
+          }
+          this.callbacks?.onInventoryChanged?.();
+          this.renderInventory(state);
+        }
+      };
+      actions.appendChild(equipHouseBtn);
+    }
 
     detailRoot.innerHTML = `
       <div class="inv-detail-header">
@@ -1713,7 +2047,7 @@ nearWater: ${debugInfo.nearWater}
     const detailExtraEl = detailRoot.querySelector('#invDetailExtra');
     const detailActionsEl = detailRoot.querySelector('#invDetailActions');
     if (detailNameEl) detailNameEl.textContent = this.getItemName(item);
-    if (detailFlagsEl) detailFlagsEl.textContent = equipState ? equipState.trim() : '';
+    if (detailFlagsEl) detailFlagsEl.textContent = '';
     if (detailIconBoxEl) detailIconBoxEl.appendChild(big);
     if (detailDescEl) detailDescEl.textContent = desc.textContent;
     if (detailExtraEl) {
