@@ -1,4 +1,4 @@
-﻿// src/data/items.js
+// src/data/items.js
 export const ITEMS = {
   fishing_rod: {
     id: 'fishing_rod',
@@ -677,7 +677,40 @@ export const ITEMS = {
       effect: 'GLOW'
     }
   },
-  // ?섏쨷??異붽????꾩씠?쒕뱾...
+  // === 농사(Farm) 관련 아이템 ===
+  farm_hoe: {
+    id: 'farm_hoe', name: '초보자용 괭이', type: 'TOOL', invTab: 'EQUIP',
+    toolKind: 'FARM_HOE', equipSlot: 'FARM_TOOL', buyPrice: 100,
+    desc: '땅을 일궈 밭으로 만듭니다.',
+    effectText: '[조작] 텃밭 구역에서 Space 키'
+  },
+  farm_water: {
+    id: 'farm_water', name: '양철 물뿌리개', type: 'TOOL', invTab: 'EQUIP',
+    toolKind: 'FARM_WATER', equipSlot: 'FARM_TOOL', buyPrice: 150,
+    desc: '작물에 물을 주어 성장을 가속합니다.',
+    effectText: '[조작] 자라나는 작물 앞에서 Space 키 (성장 시간 단축)'
+  },
+  seed_carrot: {
+    id: 'seed_carrot', name: '당근 씨앗', type: 'CONSUME', invTab: 'CONSUME',
+    toolKind: 'FARM_SEED', equipSlot: 'FARM_TOOL', buyPrice: 20,
+    harvestsInto: 'crop_carrot',
+    desc: '밭에 심을 수 있는 당근 씨앗입니다.',
+    effectText: '[조작] 빈 밭 앞에서 Space 키 (심은 후 3단계 성장 대기)'
+  },
+  crop_carrot: {
+    id: 'crop_carrot', name: '수확한 당근', type: 'ETC', invTab: 'ETC',
+    sellPrice: 80,
+    desc: '신선한 당근입니다.'
+  },
+  house_tent: {
+    id: 'house_tent', name: '낡은 텐트', type: 'INSTALL', isUnsellable: true, sellPrice: 0, invTab: 'SETUP',
+    desc: '인벤토리에서 [설치]를 눌러 내 발밑에 텐트를 칩니다.'
+  },
+  bed_camp: {
+    id: 'bed_camp', name: '야전 침대', type: 'INSTALL', isUnsellable: true, sellPrice: 0, invTab: 'SETUP',
+    desc: '텐트 근처에 [설치] 후 Space바를 누르면 수면(체력 100% 회복)을 취합니다.',
+    effectText: '[수면 버프] 체력 100% 회복'
+  }
 };
 
 export function getItem(id) {
