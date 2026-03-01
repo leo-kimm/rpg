@@ -18,7 +18,9 @@ const TILE_LEGEND = {
   'X': { type: 11, collision: 1 },
   '*': { type: 12, collision: 0 },
   'P': { type: 1, collision: 0 },
-  'H': { type: 2, collision: 1 }
+  'H': { type: 2, collision: 1 },
+  'W': { type: 13, collision: 1 },
+  'I': { type: 14, collision: 1 }
 };
 
 const WATER_CHARS = new Set(['~']);
@@ -34,11 +36,11 @@ const MAP_LAYOUT = [
   "^^^^^^^^^^^^^^^^^~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^",
   "^^^^^^^^^TTTT^^^~B~~~~~~^^^TTTT^^^^^^^^^^^^^^^^^^^",
   "^^^^^^^^TTTTT^^^~~......~^^TTTTT^^^^^^^^^^^^^^^^^^",
-  "##.......TTTT....~......~.......................##",
-  "#.........TT.....~......~........................#",
-  "#................~..Z...~........................#",
-  "#................~..Z...~........................#",
-  "#...*******......~......~......+++++++++++++.....#",
+  "##.......TTTT....~......~......WWWWWWWWW........##",
+  "#.........TT.....~......~......W...W...W.........#",
+  "#................~..Z...~......W...W...W.........#",
+  "#................~..Z...~......WWW...IWW.........#",
+  "#...*******......~......~........................#",
   "#...*******......~......~......+XXXXXXXXXXX+.....#",
   "#...*******......~......~......+XXXXXXXXXXX+.....#",
   "#................~......~......+XXXXXXXXXXX+.....#",
@@ -116,13 +118,33 @@ export const WORLD_MAP = {
     },
     { id: 'home', x: 23, y: 17, radius: 5 },
     { id: 'forest', x: 7, y: 6, radius: 8 },
-    { id: 'lake', x: 21, y: 24, radius: 6 }
+    { id: 'lake', x: 21, y: 24, radius: 6 },
+    {
+      id: 'FARM_MARKET',
+      type: 'SHOP',
+      name: '황소불소 농시장',
+      x: 40, y: 31, radius: 2,
+      rect: { x: 40, y: 31, w: 2, h: 2 },
+      shopMode: 'SELL_FARM',
+      blocksMovement: true
+    },
+    {
+      id: 'FARM_SHOP',
+      type: 'SHOP',
+      name: '농사용품점',
+      x: 44, y: 31, radius: 2,
+      rect: { x: 44, y: 31, w: 2, h: 2 },
+      shopMode: 'BUY_FARM',
+      blocksMovement: true
+    }
   ],
   npcs: [
     { id: 'NPC_SEA_ELEPHANT', kind: 'SHOPKEEPER_SELL', name: '바다코끼리 상인', x: 32, y: 32, shopId: 'FISH_MARKET' },
     { id: 'NPC_TACKLE', kind: 'SHOPKEEPER_BUY', name: '용품점 주인', x: 36, y: 32, shopId: 'TACKLE_SHOP' },
     { id: 'NPC_MAYOR', kind: 'QUEST_GIVER', name: '촌장', x: 22, y: 14, questId: 'tut_controls' },
-    { id: 'NPC_FOREST_KEEPER', kind: 'QUEST_GIVER', name: '숲지기', x: 6, y: 8, questId: 'tut_pet_obtain' }
+    { id: 'NPC_FOREST_KEEPER', kind: 'QUEST_GIVER', name: '숲지기', x: 6, y: 8, questId: 'tut_pet_obtain' },
+    { id: 'NPC_FARMER_SELL', kind: 'SHOPKEEPER_SELL', name: '농시장 상인', x: 42, y: 32, shopId: 'FARM_MARKET' },
+    { id: 'NPC_FARMER_BUY', kind: 'SHOPKEEPER_BUY', name: '씨앗 상인', x: 46, y: 32, shopId: 'FARM_SHOP' }
   ],
   tileLayer: TILE_LAYER,
   collisionLayer: COLLISION_LAYER
@@ -195,3 +217,16 @@ export function getWaterRegion(tx, ty) {
   return zone ? zone.region : 'midstream';
 }
 
+// 농사 가능 타일: 울타리 내부 좌표만 허용 (3x2 텃밭 2개)
+// Plot A: x:32-34, y:6-7 / Plot B: x:36-38, y:6-7
+export const FARM_PLOT_ZONES = [
+  { x: 32, y: 5, w: 3, h: 2 },  // 좌측 텃밭
+  { x: 36, y: 5, w: 3, h: 2 }   // 우측 텃밭
+];
+
+export function isFarmableTile(tx, ty) {
+  return FARM_PLOT_ZONES.some(z => tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h);
+}
+
+// 하위 호환: 타일 타입 기반 검사 (레거시)
+export const FARMABLE_TILES = [0, 1];
