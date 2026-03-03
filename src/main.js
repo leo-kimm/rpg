@@ -23,14 +23,129 @@ canvas.height = CANVAS_H;
 let state = createInitialState();
 const input = new Input();
 const dataManager = new DataManager();
+window.MAILBOX_POS = { tx: 24, ty: 14 }; // 촌장(22, 14) 우측 빈 공간
+
+window.openMailboxUI = async function (state) {
+  state.mode = 'MENU';
+  let container = document.getElementById('mailbox-ui');
+
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'mailbox-ui';
+    // 전체 컨테이너를 세로 정렬(column)로 변경하여 헤더와 바디 분리
+    container.style.cssText = 'position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:640px; height:480px; background:#2c3e50; border:4px solid #f1c40f; color:#ecf0f1; display:flex; flex-direction:column; font-family:"DotGothic16", sans-serif; z-index:9999; box-shadow: 0 0 20px rgba(0,0,0,0.8); border-radius: 8px;';
+
+    // 상단 헤더 (제목 및 닫기 버튼 영역)
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 20px; background:#1a252f; border-bottom:2px solid #34495e;';
+    header.innerHTML = '<h2 style="margin:0; color:#f1c40f; font-size:20px;">📮 마을 공용 우편함</h2>';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.innerText = '닫기 X';
+    closeBtn.style.cssText = 'background:#e74c3c; color:white; border:none; padding:8px 16px; cursor:pointer; font-weight:bold; border-radius:4px; font-family:"DotGothic16";';
+    closeBtn.onclick = () => window.closeMailboxUI();
+    header.appendChild(closeBtn);
+    container.appendChild(header);
+
+    // 메인 바디 (좌우 패널)
+    const body = document.createElement('div');
+    body.style.cssText = 'display:flex; flex:1; flex-direction:row; padding:10px; gap:10px; overflow:hidden;';
+
+    // 좌측: 서버 보관함
+    const leftPanel = document.createElement('div');
+    leftPanel.style.cssText = 'flex:1; display:flex; flex-direction:column; background:#1a252f; border-radius:4px; padding:10px;';
+    leftPanel.innerHTML = '<h3 style="margin-top:0; color:#3498db; text-align:center;">서버 보관함<br><small style="color:#7f8c8d; font-size:12px;">(누구나 가져갈 수 있습니다)</small></h3>';
+    const serverList = document.createElement('div');
+    serverList.id = 'mb-server-list';
+    serverList.style.cssText = 'flex:1; overflow-y:auto; padding-right:5px;';
+    leftPanel.appendChild(serverList);
+
+    // 우측: 내 인벤토리
+    const rightPanel = document.createElement('div');
+    rightPanel.style.cssText = 'flex:1; display:flex; flex-direction:column; background:#1a252f; border-radius:4px; padding:10px;';
+    rightPanel.innerHTML = '<h3 style="margin-top:0; color:#2ecc71; text-align:center;">내 가방<br><small style="color:#7f8c8d; font-size:12px;">(클릭하여 우편함에 넣기)</small></h3>';
+    const localList = document.createElement('div');
+    localList.id = 'mb-local-list';
+    localList.style.cssText = 'flex:1; overflow-y:auto; padding-right:5px;';
+    rightPanel.appendChild(localList);
+
+    body.appendChild(leftPanel);
+    body.appendChild(rightPanel);
+    container.appendChild(body);
+
+    document.body.appendChild(container);
+  }
+
+  container.style.display = 'flex';
+
+  const render = async () => {
+    if (!window._dataManager) return;
+    const serverItemsObj = await window._dataManager.fetchMailbox();
+    const serverList = document.getElementById('mb-server-list');
+    if (serverList) serverList.innerHTML = '';
+
+    if (Object.keys(serverItemsObj).length === 0 && serverList) {
+      serverList.innerHTML = '<p style="color:#95a5a6; text-align:center; margin-top:50%;">우편함이 비어있습니다.</p>';
+    }
+
+    Object.entries(serverItemsObj).forEach(([key, item]) => {
+      const meta = window.getItem ? window.getItem(item.itemId) : null;
+      const btn = document.createElement('button');
+      btn.innerHTML = `◀ 가져오기: ${meta?.name || item.itemId}`;
+      btn.style.cssText = 'display:block; width:100%; margin-bottom:8px; padding:10px; background:#2980b9; color:white; border:none; cursor:pointer; text-align:left; border-radius:4px; font-family:"DotGothic16"; transition: background 0.2s;';
+      btn.onmouseover = () => btn.style.background = '#3498db';
+      btn.onmouseout = () => btn.style.background = '#2980b9';
+      btn.onclick = async () => {
+        await window._dataManager.clearMailboxItem(key);
+        if (typeof invAdd === 'function') invAdd(state.inventory, item.itemId, 1);
+        state.uiDirty = true; // 인벤토리 변경 알림
+        if (window._dataManager.saveUserData) window._dataManager.saveUserData(state); // 즉시 저장
+        render();
+      };
+      if (serverList) serverList.appendChild(btn);
+    });
+
+    const localList = document.getElementById('mb-local-list');
+    if (localList) localList.innerHTML = '';
+    const inv = Array.isArray(state.inventory) ? state.inventory : [];
+    if (inv.length === 0 && localList) {
+      localList.innerHTML = '<p style="color:#95a5a6; text-align:center; margin-top:50%;">가방이 비어있습니다.</p>';
+    }
+
+    inv.forEach((invItem) => {
+      if (!invItem || !invItem.itemId) return;
+      const meta = window.getItem ? window.getItem(invItem.itemId) : null;
+      const btn = document.createElement('button');
+      btn.innerHTML = `넣기 ▶ : ${meta?.name || invItem.itemId} (보유: ${invItem.count || 1})`;
+      btn.style.cssText = 'display:block; width:100%; margin-bottom:8px; padding:10px; background:#27ae60; color:white; border:none; cursor:pointer; text-align:left; border-radius:4px; font-family:"DotGothic16"; transition: background 0.2s;';
+      btn.onmouseover = () => btn.style.background = '#2ecc71';
+      btn.onmouseout = () => btn.style.background = '#27ae60';
+      btn.onclick = async () => {
+        if (typeof invRemove === 'function') invRemove(state.inventory, invItem.itemId, 1);
+        await window._dataManager.pushToMailbox({ itemId: invItem.itemId });
+        state.uiDirty = true; // 인벤토리 변경 알림
+        if (window._dataManager.saveUserData) window._dataManager.saveUserData(state); // 즉시 저장
+        render();
+      };
+      if (localList) localList.appendChild(btn);
+    });
+  };
+  render();
+};
+
+window.closeMailboxUI = function () {
+  const container = document.getElementById('mailbox-ui');
+  if (container) container.style.display = 'none';
+  if (window.Game && window.Game.state) window.Game.state.mode = 'EXPLORE';
+};
 window._dataManager = dataManager; // InteractionSystem 밀치기용 전역 접근
 let player = null;
 let petRef = { pet: null };
 
-// [신규 추가] 메모리 주소를 유지하며 상태를 안전하게 덮어쓰는 함수
 function syncState(newState) {
+  const safeState = Object.assign(createInitialState(), newState);
   Object.keys(state).forEach(key => delete state[key]);
-  Object.assign(state, newState);
+  Object.assign(state, safeState);
 }
 
 // Delta Time Variables
@@ -49,6 +164,10 @@ function emitQuestEvent(type, payload = {}) {
 }
 
 function ensureFishBagState() {
+  if (!state.playerPos || typeof state.playerPos !== 'object') {
+    state.playerPos = { tx: 22, ty: 16, facing: 'down', mapId: 'town' };
+    if (UI && UI.addSystemMessage) UI.addSystemMessage('데이터 무결성 오류로 위치 정보가 초기화되었습니다.', '#e67e22');
+  }
   if (!state.bags || typeof state.bags !== 'object') {
     state.bags = {};
   }
@@ -176,6 +295,12 @@ const camera = {
 
 // Init
 async function init() {
+  // Expose getItem so it can be safely called or debugged from window scope if needed
+  window.getItem = (await import('./data/items.js')).getItem;
+
+  // [FIX] Register Admin Key properly in Input system
+  input.bindKey('k', 'ADMIN_DEMOLISH');
+
   UI.init({
     onNewGame: startNewGame,
     onContinue: loadGame,
@@ -210,6 +335,14 @@ async function init() {
     },
     processCloseUI: () => {
       handleCancelAction();
+    },
+    completeQuest: (questId) => {
+      if (QuestSystem.completeQuest(state, questId)) {
+        UI.addSystemMessage('퀘스트 보상을 획득했습니다!', '#2ecc71');
+        dataManager.saveUserData(state).catch(e => console.error("Quest turn-in save failed", e));
+        if (UI.renderQuestLog) UI.renderQuestLog(state);
+        if (UI.updateQuestTracker) UI.updateQuestTracker(state);
+      }
     }
   };
 
@@ -674,6 +807,35 @@ function update(dt) {
   if (input.wasActionPressed('INSTALL_HOUSE')) {
     input.consumeAction('INSTALL_HOUSE'); // 중복 처리를 막기 위해 입력 즉시 소모
 
+    // [NEW] 1. 가구 회수 시도 (발밑 또는 눈앞의 내 가구 확인)
+    const pTx = state.playerPos.tx;
+    const pTy = state.playerPos.ty;
+    const pFacing = state.playerPos.facing || 'down';
+    const fTx = pTx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
+    const fTy = pTy + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
+
+    const houseIdx = (state.houses || []).findIndex(h => (h.tx === pTx && h.ty === pTy) || (h.tx === fTx && h.ty === fTy));
+    if (houseIdx >= 0) {
+      const removed = state.houses.splice(houseIdx, 1)[0];
+      if (!Array.isArray(state.inventory)) state.inventory = [];
+
+      if (typeof invAdd === 'function') {
+        invAdd(state.inventory, removed.id, 1);
+      } else {
+        const exist = state.inventory.find(i => i.itemId === removed.id);
+        if (exist) exist.count++;
+        else state.inventory.push({ itemId: removed.id, count: 1 });
+      }
+
+      if (typeof addSystemMsg === 'function') addSystemMsg('가구를 성공적으로 회수했습니다.', '#3498db');
+      else if (UI && UI.addSystemMessage) UI.addSystemMessage('가구를 성공적으로 회수했습니다.', '#3498db');
+
+      if (typeof dataManager !== 'undefined' && dataManager.saveUserData) {
+        dataManager.saveUserData(state).catch(e => console.error(e));
+      }
+      return; // 회수 성공 시 기존 설치 로직을 건너뛰고 즉시 종료
+    }
+
     if (state.mode !== MODES.EXPLORE) {
       console.log("[INSTALL_HOUSE] 실패: 탐험(EXPLORE) 모드가 아닙니다. (현재 모드:", state.mode, ")");
     } else if (!state.equipment || !state.equipment.activeToolId) {
@@ -866,6 +1028,7 @@ function handleCancelAction() {
 
   // 4. 메뉴 닫기
   if (state.mode === MODES.MENU) {
+    if (window.closeMailboxUI) window.closeMailboxUI(); // [NEW] 우편함 ESC 닫기 연동
     if (UI.togglePokedex) UI.togglePokedex(false, state);
     if (UI.toggleInventory) UI.toggleInventory(false, state);
     if (UI.toggleQuestLog) UI.toggleQuestLog(false, state);
@@ -922,6 +1085,7 @@ function updateShop() {
 }
 
 function updateExplore(dt) {
+  if (!state || !state.playerPos) return; // [FIX] Critical crash guard
   const safeDt = Math.min(dt, 0.1);
 
   // [New] Debounce double-triggers from exiting dialogs (Space만 해당)
@@ -956,7 +1120,7 @@ function updateExplore(dt) {
     if (state?.seat?.isSeated && player && ActionSystem.stopSeating) ActionSystem.stopSeating(state, player, 'MODE_CHANGE');
     state.mode = MODES.MENU;
     try {
-      UI.toggleQuestLog(true, state);
+      UI.toggleQuestLog(true, state, false); // false = View-only mode
     } catch (e) {
       console.error(e);
       state.mode = MODES.EXPLORE;
@@ -992,7 +1156,7 @@ function updateExplore(dt) {
   }
 
   // [Phase 3 Teleport Bridge] state.playerPos와 실제 물리 객체의 강제 동기화 (텔레포트 대비)
-  if (player && (player.tx !== state.playerPos.tx || player.ty !== state.playerPos.ty)) {
+  if (player && state.playerPos && (player.tx !== state.playerPos.tx || player.ty !== state.playerPos.ty)) {
     const dist = Math.abs(player.tx - state.playerPos.tx) + Math.abs(player.ty - state.playerPos.ty);
     player.setPosition(state.playerPos.tx, state.playerPos.ty, state.playerPos.facing || player.facing);
 
@@ -1015,9 +1179,15 @@ function updateExplore(dt) {
 
     MovementSystem.update(state, input, player, WORLD_MAP);
 
-    InteractionSystem.update(state, input, WORLD_MAP, (msg) => {
-      UI.showDialog(msg);
-      state.mode = MODES.DIALOG;
+    InteractionSystem.update(state, input, WORLD_MAP, (msg, npcId) => {
+      // [NEW] 촌장일 경우 다이얼로그 대신 퀘스트 보드 오픈
+      if (npcId === 'NPC_MAYOR') {
+        state.mode = MODES.MENU;
+        if (UI.toggleQuestLog) UI.toggleQuestLog(true, state, true); // true = Mayor Mode
+      } else {
+        UI.showDialog(msg);
+        state.mode = MODES.DIALOG;
+      }
       dataManager.saveUserData(state).catch(e => {
         if (dataManager.previousState) syncState(dataManager._deepMerge({}, dataManager.previousState));
         console.error("Interaction save failed", e);
@@ -1292,17 +1462,42 @@ function drawTackleNpc(ctx, tx, ty) {
 function drawMayorNpc(ctx, tx, ty) {
   const px = tx * TILE_SIZE;
   const py = ty * TILE_SIZE;
+
+  // 1. 그림자
   ctx.fillStyle = 'rgba(0,0,0,0.22)';
   ctx.beginPath();
   ctx.ellipse(px + TILE_SIZE / 2, py + TILE_SIZE - 2, 8, 3, 0, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#3f6ea8';
-  ctx.fillRect(px + 10, py + 10, 12, 14);
+
+  // 2. 몸체 (인자한 갈색 코트)
+  ctx.fillStyle = '#6d4c41';
+  ctx.fillRect(px + 10, py + 12, 12, 12);
+
+  // 3. 얼굴
   ctx.fillStyle = '#f1c27d';
-  ctx.fillRect(px + 10, py + 4, 12, 9);
+  ctx.fillRect(px + 10, py + 5, 12, 8);
+
+  // 4. 풍성한 흰 수염 (촌장의 상징)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(px + 10, py + 10, 12, 5); // 턱수염
+  ctx.fillRect(px + 9, py + 9, 3, 3);    // 왼쪽 구두수염
+  ctx.fillRect(px + 20, py + 9, 3, 3);   // 오른쪽 구두수염
+
+  // 5. 검은색 중절모
   ctx.fillStyle = '#2c3e50';
-  ctx.fillRect(px + 12, py + 8, 2, 2);
-  ctx.fillRect(px + 18, py + 8, 2, 2);
+  ctx.fillRect(px + 8, py + 4, 16, 2);   // 모자 챙
+  ctx.fillRect(px + 11, py + 1, 10, 4);  // 모자 본체
+
+  // 6. 눈
+  ctx.fillStyle = '#2c3e50';
+  ctx.fillRect(px + 12, py + 7, 2, 2);
+  ctx.fillRect(px + 18, py + 7, 2, 2);
+
+  // 7. 지팡이 (오른손에 든 지팡이)
+  ctx.fillStyle = '#5d4037';
+  ctx.fillRect(px + 22, py + 10, 2, 14); // 지팡이 막대
+  ctx.fillStyle = '#d4af37';
+  ctx.fillRect(px + 21, py + 9, 4, 2);   // 지팡이 손잡이 (금색)
 }
 
 function drawForestKeeperNpc(ctx, tx, ty) {
@@ -1492,6 +1687,17 @@ function drawNpcBubble(ctx, npc, text) {
   ctx.fillText(text, bx + padX, by + 16);
 }
 
+function drawSharedMailbox(ctx, tx, ty) {
+  const px = tx * 32; // TILE_SIZE is 32
+  const py = ty * 32;
+  ctx.fillStyle = '#e74c3c'; // 빨간 우편함 색
+  ctx.fillRect(px + 10, py + 10, 12, 16); // 우편함 몸체
+  ctx.fillStyle = '#2c3e50';
+  ctx.fillRect(px + 14, py + 26, 4, 6);   // 기둥
+  ctx.fillStyle = '#f1c40f';
+  ctx.fillRect(px + 12, py + 14, 8, 2);   // 입구
+}
+
 function draw() {
   let tilesDrawn = 0;
   let entitiesCount = 0;
@@ -1530,6 +1736,15 @@ function draw() {
 
     const camX = Math.max(0, Math.round(camera.x));
     const camY = Math.max(0, Math.round(camera.y));
+
+    // [FIX] NaN guards to prevent render crashes
+    if (!Number.isFinite(camera.x)) camera.x = 0;
+    if (!Number.isFinite(camera.y)) camera.y = 0;
+    if (player && (!Number.isFinite(player.renderX) || !Number.isFinite(player.renderY))) {
+      player.renderX = player.tx * 32;
+      player.renderY = player.ty * 32;
+    }
+
     ctx.save();
     ctx.translate(-camX, -camY);
 
@@ -1610,37 +1825,37 @@ function draw() {
       else if (npc.kind === 'SHOPKEEPER_BUY') drawTackleNpc(ctx, npc.x, npc.y);
     });
 
+    // [FIX] 우편함이 지형에 덮이지 않도록 NPC 레이어 직후에 그림
+    if (!state.inInstance && window.MAILBOX_POS) {
+      drawSharedMailbox(ctx, window.MAILBOX_POS.tx, window.MAILBOX_POS.ty);
+    }
+
     if (state?.ui?.npcBubble?.visible && state?.ui?.npcBubble?.id) {
       const npc = npcs.find((n) => n.id === state.ui.npcBubble.id);
       if (npc) drawNpcBubble(ctx, npc, state.ui.npcBubble.text);
     }
 
     // Draw Entities
-    // [M2] 농장(Farm) 시각적 렌더링 — 타일 위, 엔티티 아래
-    if (state.mode === MODES.EXPLORE && state.farm) {
-      for (const key in state.farm) {
-        const [fx, fy] = key.split(',').map(Number);
+    // [M2] 글로벌 농장(Farm) 렌더링
+    const globalFarm = {
+      ...(state.farm || {}),
+      ...((window._dataManager && window._dataManager.publicFarm) ? window._dataManager.publicFarm : {})
+    };
+    if (state.mode === MODES.EXPLORE && globalFarm) {
+      for (const key in globalFarm) {
+        const crop = globalFarm[key];
+        if (!crop || typeof key !== 'string') continue;
+
+        const [fx, fy] = key.split('_').map(Number);
+        // [HOTFIX] 구버전 콤마(,) 데이터 유입 시 NaN으로 인한 Canvas 크래시 완벽 차단
         if (!Number.isFinite(fx) || !Number.isFinite(fy)) continue;
-        // 카메라 컬링
-        const pxF = fx * TILE_SIZE;
-        const pyF = fy * TILE_SIZE;
-        if (pxF < camera.x - TILE_SIZE || pxF > camera.x + camera.width ||
-          pyF < camera.y - TILE_SIZE || pyF > camera.y + camera.height) continue;
 
-        const crop = state.farm[key];
-
-        // 1. 밭(Tilled Soil) 베이스
-        ctx.fillStyle = '#4e342e';
-        ctx.fillRect(pxF + 1, pyF + 1, TILE_SIZE - 2, TILE_SIZE - 2);
-        ctx.strokeStyle = '#3e2723';
-        ctx.strokeRect(pxF + 1, pyF + 1, TILE_SIZE - 2, TILE_SIZE - 2);
-
-        // 2. 수분(Water) 오버레이
+        const pxF = fx * TILE_SIZE; const pyF = fy * TILE_SIZE;
+        ctx.fillStyle = '#4e342e'; ctx.fillRect(pxF + 1, pyF + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+        ctx.strokeStyle = '#3e2723'; ctx.strokeRect(pxF + 1, pyF + 1, TILE_SIZE - 2, TILE_SIZE - 2);
         if (crop.waterLevel > 0) {
-          ctx.fillStyle = 'rgba(41, 128, 185, 0.25)';
-          ctx.fillRect(pxF + 1, pyF + 1, TILE_SIZE - 2, TILE_SIZE - 2);
+          ctx.fillStyle = 'rgba(41, 128, 185, 0.25)'; ctx.fillRect(pxF + 1, pyF + 1, TILE_SIZE - 2, TILE_SIZE - 2);
         }
-
       }
     }
 
@@ -1653,32 +1868,76 @@ function draw() {
     }
     if (player) player.isSeated = state.mode === MODES.EXPLORE && !!state?.seat?.isSeated;
 
-    // [M4] 작물을 Y-Sort 엔티티로 변환하여 삽입
-    if (state.mode === MODES.EXPLORE && state.farm) {
-      for (const key in state.farm) {
-        const crop = state.farm[key];
-        if (!crop.cropId) continue;
-        const [fx, fy] = key.split(',').map(Number);
-        const pxF = fx * TILE_SIZE;
-        const pyF = fy * TILE_SIZE;
+    // [M4] 작물 Y-Sort 렌더링
+    if (state.mode === MODES.EXPLORE && globalFarm) {
+      for (const key in globalFarm) {
+        const crop = globalFarm[key];
+        if (!crop || !crop.cropId) continue; // [HOTFIX] Null 방어
+        const [fx, fy] = key.split('_').map(Number);
+        const pxF = fx * TILE_SIZE; const pyF = fy * TILE_SIZE;
 
         entities.push({
-          renderY: pyF + TILE_SIZE / 2 + 4, // Y-Sort 정렬 기준점
+          renderY: pyF + TILE_SIZE / 2 + 4,
           render: (ctx) => {
             const cx = pxF + TILE_SIZE / 2; const cy = pyF + TILE_SIZE / 2 + 2;
             const stage = crop.stage || 0;
-            if (stage === 0) { // 씨앗 (납작한 타원)
+            if (stage === 0) {
               ctx.fillStyle = '#8d6e63'; ctx.beginPath(); ctx.ellipse(cx, cy + 2, 4, 2, 0, 0, Math.PI * 2); ctx.fill();
-            } else if (stage === 1) { // 새싹 (양갈래)
+            } else if (stage === 1) {
               ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.moveTo(cx, cy + 2); ctx.lineTo(cx, cy - 2);
               ctx.quadraticCurveTo(cx - 4, cy - 4, cx - 4, cy - 1); ctx.quadraticCurveTo(cx - 2, cy - 1, cx, cy - 2);
               ctx.quadraticCurveTo(cx + 4, cy - 4, cx + 4, cy - 1); ctx.quadraticCurveTo(cx + 2, cy - 1, cx, cy - 2); ctx.fill();
-            } else if (stage === 2) { // 줄기 (풍성한 잎)
+            } else if (stage === 2) {
               ctx.fillStyle = '#27ae60'; ctx.beginPath(); ctx.moveTo(cx, cy + 2); ctx.lineTo(cx, cy - 3);
               ctx.ellipse(cx - 3, cy - 3, 4, 2, Math.PI / 4, 0, Math.PI * 2); ctx.ellipse(cx + 3, cy - 3, 4, 2, -Math.PI / 4, 0, Math.PI * 2); ctx.fill();
-            } else if (stage === 3) { // 열매 (당근)
-              ctx.fillStyle = '#e67e22'; ctx.beginPath(); ctx.moveTo(cx - 3, cy - 1); ctx.lineTo(cx + 3, cy - 1); ctx.lineTo(cx, cy + 6); ctx.fill();
-              ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.moveTo(cx, cy - 1); ctx.lineTo(cx - 3, cy - 6); ctx.lineTo(cx, cy - 8); ctx.lineTo(cx + 3, cy - 6); ctx.fill();
+            } else if (stage === 3) {
+              if (crop.cropId === 'crop_greenonion') {
+                ctx.fillStyle = '#ecf0f1'; ctx.fillRect(cx - 2, cy - 8, 4, 8);
+                ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.moveTo(cx - 2, cy - 8); ctx.lineTo(cx - 6, cy - 18); ctx.lineTo(cx - 1, cy - 10); ctx.fill();
+                ctx.fillStyle = '#27ae60'; ctx.beginPath(); ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy - 20); ctx.lineTo(cx + 2, cy - 10); ctx.fill();
+                ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.moveTo(cx + 2, cy - 8); ctx.lineTo(cx + 6, cy - 16); ctx.lineTo(cx + 1, cy - 10); ctx.fill();
+              } else if (crop.cropId === 'crop_tomato') {
+                // 토마토: 나무 지지대와 크고 붉은 열매 강조 (초록 덤불 제거)
+                ctx.fillStyle = '#8d6e63'; // 지지대 막대
+                ctx.fillRect(cx - 1, cy - 14, 2, 14);
+                ctx.fillStyle = '#2ecc71'; // 하단에 약간의 잎사귀만 배치
+                ctx.beginPath(); ctx.ellipse(cx, cy - 3, 5, 2, 0, 0, Math.PI * 2); ctx.fill();
+
+                // 크고 탐스러운 토마토 열매 3개
+                ctx.fillStyle = '#e74c3c';
+                ctx.beginPath(); ctx.arc(cx - 4, cy - 8, 3.5, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(cx + 4, cy - 4, 3.5, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.arc(cx + 1, cy - 12, 3, 0, Math.PI * 2); ctx.fill();
+
+                // 열매 광택 효과
+                ctx.fillStyle = '#ff7675';
+                ctx.fillRect(cx - 5, cy - 9, 1, 1);
+                ctx.fillRect(cx + 3, cy - 5, 1, 1);
+
+              } else if (crop.cropId === 'crop_potato') {
+                // 감자: 수확기가 되어 흙 위로 드러난 큼직한 감자 알맹이 강조
+                ctx.fillStyle = '#5d4037'; // 밑동 흙더미
+                ctx.beginPath(); ctx.ellipse(cx, cy, 7, 3, 0, 0, Math.PI * 2); ctx.fill();
+
+                // 큼직한 포슬포슬 감자 (황토색)
+                ctx.fillStyle = '#e1b12c';
+                ctx.beginPath(); ctx.ellipse(cx - 4, cy - 2, 4.5, 3, -0.3, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.ellipse(cx + 3, cy - 1, 5, 3.5, 0.4, 0, Math.PI * 2); ctx.fill();
+                ctx.beginPath(); ctx.ellipse(cx, cy - 5, 3.5, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+
+                // 감자 눈(씨눈) 디테일
+                ctx.fillStyle = '#c23616';
+                ctx.fillRect(cx - 5, cy - 2, 1, 1);
+                ctx.fillRect(cx + 4, cy - 1, 1, 1);
+                ctx.fillRect(cx, cy - 5, 1, 1);
+
+                // 시든 잎사귀 (초록색 비중 극소화)
+                ctx.fillStyle = '#a4b0be';
+                ctx.beginPath(); ctx.moveTo(cx, cy - 6); ctx.lineTo(cx - 2, cy - 10); ctx.lineTo(cx + 2, cy - 9); ctx.fill();
+              } else {
+                ctx.fillStyle = '#e67e22'; ctx.beginPath(); ctx.moveTo(cx - 3, cy - 1); ctx.lineTo(cx + 3, cy - 1); ctx.lineTo(cx, cy + 6); ctx.fill();
+                ctx.fillStyle = '#2ecc71'; ctx.beginPath(); ctx.moveTo(cx, cy - 1); ctx.lineTo(cx - 3, cy - 6); ctx.lineTo(cx, cy - 8); ctx.lineTo(cx + 3, cy - 6); ctx.fill();
+              }
             }
           }
         });
