@@ -1,5 +1,5 @@
 import { db, auth } from './firebase-config.js';
-import { ref, set, onValue, update, push, query, limitToLast, onChildAdded, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-database.js";
+import { ref, set, get, onValue, update, push, query, limitToLast, onChildAdded, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-database.js";
 import { signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.9.0/firebase-auth.js";
 import { getItem } from './data/items.js';
 import { Storage } from './core/storage.js';
@@ -20,6 +20,7 @@ export default class DataManager {
             return DataManager.instance;
         }
 
+        this.db = db; // [FIX] Store the imported Firebase db object
         this.userId = this._getOrInitUserId();
         this.data = null;
         this.previousState = null; // [New] StateBuffer
@@ -455,6 +456,38 @@ export default class DataManager {
         onValue(housesRef, (snapshot) => {
             this.publicHouses = snapshot.val() || {};
         });
+
+        // [Phase 3] Path E: Global Farm
+        const farmRef = ref(db, 'maps/town/farm');
+        onValue(farmRef, (snapshot) => {
+            this.publicFarm = snapshot.val() || {};
+        });
+    }
+
+    updateFarmTile(tx, ty, data) {
+        if (!this.db || typeof ref === 'undefined') return;
+        const fRef = ref(this.db, `maps/town/farm/${tx}_${ty}`);
+        set(fRef, data).catch(e => console.error("Farm sync error:", e));
+    }
+
+    // [NEW] Admin function to remove ANY house from Firebase
+    async removeGlobalHouse(ownerUid, tx, ty) {
+        if (!this.db) {
+            console.error("[DataManager] DB not initialized.");
+            return;
+        }
+        const hRef = ref(this.db, `maps/town/houses/${ownerUid}`);
+        try {
+            const snapshot = await get(hRef);
+            const houses = snapshot.val() || [];
+            const filtered = houses.filter(h => !(h.tx === tx && h.ty === ty));
+            await set(hRef, filtered);
+            console.log(`[DataManager] Removed house at ${tx},${ty} for user ${ownerUid}`);
+            return true;
+        } catch (err) {
+            console.error("[DataManager] Server sync failed:", err);
+            return false;
+        }
     }
 
     broadcastEvent(data) {
@@ -480,5 +513,26 @@ export default class DataManager {
     placeItemInWorld(itemId, x, y) {
         const itemsRef = ref(db, 'world/items');
         push(itemsRef, { itemId, x, y, createdAt: Date.now() });
+    }
+
+    // 우편함 아이템 넣기 (Push)
+    async pushToMailbox(itemEntry) {
+        if (!this.db) return;
+        const mRef = ref(this.db, 'world/shared_mailbox');
+        await push(mRef, { ...itemEntry, senderId: this.userId, timestamp: Date.now() });
+    }
+
+    // 우편함 아이템 모두 가져오기 (Fetch & Clear)
+    async fetchMailbox() {
+        if (!this.db) return {};
+        const mRef = ref(this.db, 'world/shared_mailbox');
+        const snap = await get(mRef);
+        return snap.val() || {};
+    }
+
+    async clearMailboxItem(key) {
+        if (!this.db) return;
+        const itemRef = ref(this.db, `world/shared_mailbox/${key}`);
+        await set(itemRef, null);
     }
 }
