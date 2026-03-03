@@ -1,5 +1,11 @@
 // src/data/items.js
 export const ITEMS = {
+  admin_hammer: {
+    id: 'admin_hammer', name: '관리자용 망치', type: 'TOOL', invTab: 'EQUIP',
+    toolKind: 'ADMIN_TOOL', equipSlot: 'FARM_TOOL', buyPrice: 0,
+    desc: '[관리자] 눈앞의 모든 건물(내 것/타인 것)을 즉시 파괴하여 제거합니다.',
+    effectText: '[조작] 건물 앞에서 Space 키 (아이템 반환 없음)'
+  },
   fishing_rod: {
     id: 'fishing_rod',
     nameKey: 'item.fishing_rod.name',
@@ -702,6 +708,22 @@ export const ITEMS = {
     sellPrice: 80,
     desc: '신선한 당근입니다.'
   },
+  seed_greenonion: {
+    id: 'seed_greenonion', name: '대파 씨앗', type: 'CONSUME', invTab: 'CONSUME',
+    toolKind: 'FARM_SEED', equipSlot: 'FARM_TOOL', buyPrice: 40,
+    harvestsInto: 'crop_greenonion',
+    desc: '밭에 심을 수 있는 대파 씨앗입니다.',
+    effectText: '[조작] 빈 밭 앞에서 Space 키 (심은 후 3단계 성장 대기)'
+  },
+  crop_greenonion: {
+    id: 'crop_greenonion', name: '수확한 대파', type: 'ETC', invTab: 'ETC',
+    sellPrice: 150,
+    desc: '알싸하고 신선한 대파입니다. 당근보다 비싸게 팔립니다.'
+  },
+  seed_tomato: { id: 'seed_tomato', name: '토마토 씨앗', type: 'CONSUME', invTab: 'CONSUME', toolKind: 'FARM_SEED', equipSlot: 'FARM_TOOL', buyPrice: 50, harvestsInto: 'crop_tomato', desc: '빨간 토마토 씨앗입니다.' },
+  crop_tomato: { id: 'crop_tomato', name: '방울 토마토', type: 'ETC', invTab: 'ETC', sellPrice: 150, desc: '달콤한 토마토입니다.' },
+  seed_potato: { id: 'seed_potato', name: '감자 씨앗', type: 'CONSUME', invTab: 'CONSUME', toolKind: 'FARM_SEED', equipSlot: 'FARM_TOOL', buyPrice: 30, harvestsInto: 'crop_potato', desc: '포슬포슬 감자 씨앗입니다.' },
+  crop_potato: { id: 'crop_potato', name: '왕 감자', type: 'ETC', invTab: 'ETC', sellPrice: 100, desc: '갓 수확한 감자입니다.' },
   house_tent: {
     id: 'house_tent', name: '낡은 텐트', type: 'INSTALL', isUnsellable: true, sellPrice: 0, invTab: 'SETUP',
     desc: '인벤토리에서 [설치]를 눌러 내 발밑에 텐트를 칩니다.'
