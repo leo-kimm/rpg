@@ -55,4 +55,17 @@ export class Input {
   isDown(code) {
     return !!this.keys[code];
   }
+
+  // [NEW] Add runtime key binding support
+  bindKey(key, action) {
+    let code = key;
+    if (key.length === 1) {
+      code = 'Key' + key.toUpperCase();
+    }
+    if (!INPUT_MAP[action]) INPUT_MAP[action] = [];
+    if (!INPUT_MAP[action].includes(code)) {
+      INPUT_MAP[action].push(code);
+      this.blockedKeys.add(code);
+    }
+  }
 }
