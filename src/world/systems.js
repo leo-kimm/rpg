@@ -477,30 +477,23 @@ export const MovementSystem = {
       const newTy = player.ty + dy;
       if (state.seat?.isSeated) return;
 
-      // [M7] 고스트 충돌 검사 (Soft Collision: 0.5초 이상 충돌 시 bypass)
-      let ghostBlocked = false;
+      // [HOTFIX] 완벽하게 격리된 길막(충돌) 판정 및 ReferenceError 방지
+      let ghostBlocked = false; // MUST be declared here
       if (typeof window !== 'undefined' && window._ghostPlayers) {
-        const ghostEntities = window._ghostPlayers;
-        for (const uid of Object.keys(ghostEntities)) {
-          const g = ghostEntities[uid];
-          if (!g) continue;
-          // 밀려나는 중인 고스트는 충돌체로 인식하지 않음
-          if (g.isPushed) continue;
-          const gtx = Math.round(g.renderX / TILE_SIZE);
-          const gty = Math.round(g.renderY / TILE_SIZE);
-          if (gtx === newTx && gty === newTy) {
-            ghostBlocked = true;
-            break;
+        for (const uid in window._ghostPlayers) {
+          const g = window._ghostPlayers[uid];
+          if (g && typeof g.renderX === 'number' && typeof g.renderY === 'number') {
+            const gtx = Math.floor(g.renderX / 32);
+            const gty = Math.floor(g.renderY / 32);
+            if (gtx === newTx && gty === newTy) {
+              ghostBlocked = true;
+              break;
+            }
           }
         }
       }
-      // Soft Collision Bypass: 0.5초 이상 연속 충돌 시 통과 허용 (데드락 방지)
-      if (ghostBlocked) {
-        if (!state._ghostCollisionStart) state._ghostCollisionStart = now;
-        if (now - state._ghostCollisionStart > 500) {
-          ghostBlocked = false; // bypass
-        }
-      } else {
+
+      if (!ghostBlocked) {
         state._ghostCollisionStart = 0;
       }
 
@@ -510,9 +503,9 @@ export const MovementSystem = {
         let hitGlobal = false;
         // [Phase 5] 타인의 집 충돌 판정 추가
         if (typeof window !== 'undefined' && window._dataManager && window._dataManager.publicHouses) {
-            hitGlobal = Object.values(window._dataManager.publicHouses).flat().some(h => h.tx === tx && h.ty === ty);
+          hitGlobal = Object.values(window._dataManager.publicHouses).flat().some(h => h.tx === tx && h.ty === ty);
         } else if (typeof dataManager !== 'undefined' && dataManager.publicHouses) {
-            hitGlobal = Object.values(dataManager.publicHouses).flat().some(h => h.tx === tx && h.ty === ty);
+          hitGlobal = Object.values(dataManager.publicHouses).flat().some(h => h.tx === tx && h.ty === ty);
         }
         return hitLocal || hitGlobal;
       };
@@ -523,6 +516,14 @@ export const MovementSystem = {
         if (newTx < iBase || newTx > iBase + 4 || newTy < iBase || newTy > iBase + 4) {
           instanceBlocked = true; // 실내 벽 통과 방지
         }
+      }
+
+      // [NEW] 우편함 물리 충돌 처리
+      const isMailboxBlock = (window.MAILBOX_POS && newTx === window.MAILBOX_POS.tx && newTy === window.MAILBOX_POS.ty);
+      if (isMailboxBlock) {
+        player.facing = facing;
+        state.playerPos.facing = facing;
+        return; // 통과 불가
       }
 
       if (!instanceBlocked && (state.inInstance || isWalkable(newTx, newTy)) && !isHouseBlock(newTx, newTy) && !ghostBlocked) {
@@ -545,6 +546,43 @@ export const MovementSystem = {
 
 export const InteractionSystem = {
   update(state, input, map, showDialogCallback, dt = 0, addSystemMsg = null) {
+    if (!state.playerPos) return;
+
+    // [ADMIN] K key independent logic
+    const activeToolId = state.equipment?.activeToolId;
+    const activeTool = activeToolId ? getItem(activeToolId) : null;
+    if (activeTool?.toolKind === 'ADMIN_TOOL' && state.playerPos && input.wasActionPressed('ADMIN_DEMOLISH')) {
+      const pFacing = state.playerPos.facing || 'down';
+      const fX = state.playerPos.tx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
+      const fY = state.playerPos.ty + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
+
+      let deleted = false;
+      // 1. 내 건물 삭제
+      const myIdx = (state.houses || []).findIndex(h => h.tx === fX && h.ty === fY);
+      if (myIdx >= 0) {
+        state.houses.splice(myIdx, 1);
+        deleted = true;
+      } else if (window._dataManager?.publicHouses) {
+        // 2. 타인 건물 삭제 (서버 연동)
+        for (const [uid, pubHouses] of Object.entries(window._dataManager.publicHouses)) {
+          const hIdx = pubHouses.findIndex(h => h.tx === fX && h.ty === fY);
+          if (hIdx >= 0) {
+            window._dataManager.removeGlobalHouse(uid, fX, fY).then((success) => {
+              if (success && addSystemMsg) addSystemMsg(`[관리자] 서버에서 제거 완료 (${fX}, ${fY})`, '#e74c3c');
+            });
+            deleted = true; break; // 로컬 피드백 플래그는 일단 true로 셋팅
+          }
+        }
+      }
+
+      if (deleted) {
+        // 서버 요청만 보낸 경우에도 로컬에서는 조작을 소모함
+        if (myIdx >= 0 && addSystemMsg) addSystemMsg(`[관리자] 정면(${fX}, ${fY}) 건물을 철거했습니다.`, '#e74c3c');
+        input.consumeAction('ADMIN_DEMOLISH');
+      }
+      return;
+    }
+
     if (state.mode === 'BUILD') {
       if (input.wasActionPressed('INTERACT')) {
         const targetId = state.buildTarget;
@@ -633,7 +671,7 @@ export const InteractionSystem = {
     const pFacing = state.playerPos.facing || 'down';
     const fX = state.playerPos.tx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
     const fY = state.playerPos.ty + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
-    
+
     // [Phase 5] 내 집과 타인의 집 목록 통합
     let allHouses = [...(state.houses || [])];
     if (typeof window !== 'undefined' && window._dataManager && window._dataManager.publicHouses) {
@@ -702,8 +740,8 @@ export const InteractionSystem = {
         if (typeof window !== 'undefined' && window.player) {
           window.player.setPosition(targetBed.tx, targetBed.ty, 'down');
           // TILE_SIZE(32) 정중앙으로 소수점 없이 강제 고정
-          window.player.renderX = bedTx * 32;
-          window.player.renderY = bedTy * 32;
+          window.player.renderX = targetBed.tx * 32;
+          window.player.renderY = targetBed.ty * 32;
           window.player.isSleeping = true;
         }
 
@@ -759,6 +797,19 @@ export const InteractionSystem = {
     }
 
     if (input.wasActionPressed('INTERACT')) {
+      // [NEW] 우편함 전용 UI 열기
+      if (state.playerPos && !state.inInstance && window.MAILBOX_POS) {
+        const pFacing = state.playerPos.facing || 'down';
+        const fX = state.playerPos.tx + (pFacing === 'left' ? -1 : pFacing === 'right' ? 1 : 0);
+        const fY = state.playerPos.ty + (pFacing === 'up' ? -1 : pFacing === 'down' ? 1 : 0);
+
+        if (fX === window.MAILBOX_POS.tx && fY === window.MAILBOX_POS.ty) {
+          if (window.openMailboxUI) window.openMailboxUI(state);
+          input.consumeAction('INTERACT');
+          return;
+        }
+      }
+
       // [M2] 밀치기 트리거: 정면 고스트 감지 + 마주보기 검증
       if (typeof window !== 'undefined' && window._ghostPlayers && state.playerPos) {
         const pFacing = state.playerPos.facing || 'down';
@@ -820,24 +871,41 @@ export const InteractionSystem = {
         }
       }
 
-      // [Phase 3] 농사 상호작용 상태 머신 (수확 → 밭갈기 → 파종 → 물주기)
-      if (state.farm && state.playerPos) {
-        // [Phase 5] 발밑 타겟팅 (현재 밟고 있는 타일)
+      // [Phase 3] 멀티플레이 공유 농장 상호작용
+      if (state.playerPos && typeof window !== 'undefined') {
+        // [FIX] 타겟팅을 다시 '발 밑(현재 밟고 있는 타일)'으로 롤백
         const farmTx = state.playerPos.tx;
         const farmTy = state.playerPos.ty;
-        const tileKey = `${farmTx},${farmTy}`;
-        const farmTile = state.farm[tileKey];
+        const tileKey = `${farmTx}_${farmTy}`;
+
+        // [FIX] 로컬과 글로벌 데이터 병합 (투명 밭 방지)
+        const globalFarm = { ...(state.farm || {}), ...((window._dataManager && window._dataManager.publicFarm) || {}) };
+        const farmTile = globalFarm[tileKey];
         const tileType = getTileType(farmTx, farmTy);
 
-        const activeToolId = state.equipment?.activeToolId;
-        const activeTool = activeToolId ? getItem(activeToolId) : null;
+        // 글로벌 동기화 안전 래퍼 함수 (updateFarmTile이 없을 경우 로컬 대체)
+        const syncFarm = (tx, ty, data) => {
+          if (!state.farm) state.farm = {};
+          const lKey = `${tx}_${ty}`;
+          if (data === null) delete state.farm[lKey];
+          else state.farm[lKey] = data;
+
+          // [FIX] Ensure dataManager exists and updateFarmTile is a valid function before calling
+          if (window._dataManager && typeof window._dataManager.updateFarmTile === 'function') {
+            try {
+              window._dataManager.updateFarmTile(tx, ty, data);
+            } catch (e) {
+              console.warn("Global farm sync failed, using local fallback.");
+            }
+          }
+        };
 
         // A: 수확 (stage 3, 장비 무관)
         if (farmTile && farmTile.stage === 3) {
           if (addSystemMsg) addSystemMsg('작물을 수확했습니다!', '#2ecc71');
           if (!Array.isArray(state.inventory)) state.inventory = [];
           if (farmTile.cropId) invAdd(state.inventory, farmTile.cropId, 1);
-          delete state.farm[tileKey];
+          syncFarm(farmTx, farmTy, null);
           state.uiDirty = true;
           input.consumeAction('INTERACT');
           return;
@@ -846,11 +914,11 @@ export const InteractionSystem = {
         // B: 밭갈기 (괭이 + 농사 가능 타일 + 아직 밭 아님)
         if (activeTool?.toolKind === 'FARM_HOE' && !farmTile && isFarmableTile(farmTx, farmTy)) {
           if (state.stamina < 2) {
-            if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
+            if (addSystemMsg) addSystemMsg('체력이 부족합니다.', '#e74c3c');
             return;
           }
           state.stamina = Math.max(0, state.stamina - 2);
-          state.farm[tileKey] = { cropId: null, stage: 0, waterLevel: 0, plantedAt: null };
+          syncFarm(farmTx, farmTy, { cropId: null, stage: 0, waterLevel: 0, plantedAt: null });
           if (addSystemMsg) addSystemMsg('밭을 일궜습니다.', '#e67e22');
           state.uiDirty = true;
           input.consumeAction('INTERACT');
@@ -859,14 +927,10 @@ export const InteractionSystem = {
 
         // C: 파종 (씨앗 + 빈 밭)
         if (activeTool?.toolKind === 'FARM_SEED' && farmTile && !farmTile.cropId) {
-          if (state.stamina < 2) {
-            if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
-            return;
-          }
+          if (state.stamina < 2) return;
           state.stamina = Math.max(0, state.stamina - 2);
-          farmTile.cropId = activeTool.harvestsInto || activeToolId;
-          farmTile.stage = 1;
-          farmTile.plantedAt = Date.now();
+          const newCropId = activeTool.harvestsInto || activeToolId;
+          syncFarm(farmTx, farmTy, { cropId: newCropId, stage: 1, plantedAt: Date.now(), waterLevel: farmTile.waterLevel || 0 });
           invRemove(state.inventory, activeToolId, 1);
           if (invCount(state.inventory, activeToolId) <= 0) state.equipment.activeToolId = null;
           if (addSystemMsg) addSystemMsg('씨앗을 심었습니다.', '#f1c40f');
@@ -877,12 +941,9 @@ export const InteractionSystem = {
 
         // D: 물주기 (물뿌리개 + 성장 중 + 수분 없음)
         if (activeTool?.toolKind === 'FARM_WATER' && farmTile && farmTile.stage > 0 && farmTile.stage < 3 && farmTile.waterLevel === 0) {
-          if (state.stamina < 2) {
-            if (addSystemMsg) addSystemMsg('체력이 부족합니다. 야전침대에서 휴식하세요.', '#e74c3c');
-            return;
-          }
+          if (state.stamina < 2) return;
           state.stamina = Math.max(0, state.stamina - 2);
-          farmTile.waterLevel = 1;
+          syncFarm(farmTx, farmTy, { ...farmTile, waterLevel: 1 });
           if (addSystemMsg) addSystemMsg('작물에 물을 주었습니다.', '#3498db');
           state.uiDirty = true;
           input.consumeAction('INTERACT');
@@ -923,7 +984,7 @@ export const InteractionSystem = {
         }
 
         // 4. 대사 출력
-        if (finalMsg) showDialogCallback(finalMsg);
+        if (finalMsg) showDialogCallback(finalMsg, questNpc.id);
 
         input.consumeAction('INTERACT');
         input.consumeAction('USE_TOOL');
@@ -1215,7 +1276,8 @@ export const ActionSystem = {
       const rod = getEquippedRodInfo(state);
       const rodTier = rod.tier || 1;
       player.rodTier = rodTier;
-      const biteChanceN = rodTier >= 3 ? 50 : rodTier >= 2 ? 80 : 120;
+      // [TWEAK] 등급이 높을수록 대물을 노리므로 입질 대기 시간이 길어짐 (T1:~3.5초, T2:~7초, T3:~12초)
+      const biteChanceN = rodTier >= 3 ? 720 : rodTier >= 2 ? 420 : 210;
       if (RNG.chance(biteChanceN)) {
         const tierTable = getTierFishTable(rodTier);
         const petBuff = getActivePetFishingBuff(state);
@@ -1277,7 +1339,8 @@ export const ActionSystem = {
             finalFishId: caughtFish.id
           };
           consumeActiveBait(state, addSystemMsg || showDialog);
-          state.fishingCooldown = rodTier >= 3 ? 25 : rodTier >= 2 ? 40 : 60;
+          // [TWEAK] 대물을 낚은 후의 피로도 반영 (등급이 높을수록 쿨타임 증가)
+          state.fishingCooldown = rodTier >= 3 ? 120 : rodTier >= 2 ? 80 : 40;
           this.stopFishing(state, player, 'CAUGHT');
           QuestSystem.emitQuestEvent(state, 'CATCH_FISH', { fishId: caughtFish.id, rarity, weightG: rolledWeight });
           const fishName = caughtFish.nameKey ? t(caughtFish.nameKey) : caughtFish.name;
@@ -1377,6 +1440,19 @@ export const QuestSystem = {
     if (!state.quests.stepProgress[questId] || typeof state.quests.stepProgress[questId] !== 'object') {
       state.quests.stepProgress[questId] = {};
     }
+
+    // [FIX] 수락 즉시 인벤토리 소지품을 검사하여 조건 소급 충족
+    if (Array.isArray(quest.steps)) {
+      quest.steps.forEach(step => {
+        if (step.match && step.match.itemId) {
+          const count = invCount(state.inventory, step.match.itemId);
+          if (count > 0) {
+            state.quests.stepProgress[questId][step.id] = Math.min(step.count || 1, count);
+          }
+        }
+      });
+    }
+
     state.quests._dirty = true;
     return true;
   },
@@ -1418,9 +1494,7 @@ export const QuestSystem = {
         if (isNearPOI(map, state.playerPos, step.targetPOI)) {
           if (this.completeStep(state, questId, step.id)) {
             changed = true;
-            if (this.isQuestComplete(state, questId)) {
-              if (this.completeQuest(state, questId)) changed = true;
-            }
+            // [Phase 1-2] 자동 완료 방지 (촌장에게 보고해야 완료됨)
           }
         }
       }
@@ -1472,7 +1546,7 @@ export const QuestSystem = {
       const progress = state.quests.stepProgress[questId] || {};
       const step = getCurrentStep(quest, progress);
       if (!step) {
-        if (this.completeQuest(state, questId)) changed = true;
+        changed = true; // 대기 상태 유지
         continue;
       }
       if (!matchesQuestEvent(step, eventType, payload)) continue;
@@ -1484,9 +1558,7 @@ export const QuestSystem = {
       }
       state.quests.stepProgress[questId][step.id] = Math.min(need, cur + 1);
       changed = true;
-      if (this.isQuestComplete(state, questId)) {
-        if (this.completeQuest(state, questId)) changed = true;
-      }
+      // 자동 완료 방지
     }
     if (changed) state.quests._dirty = true;
     return changed;
@@ -1521,32 +1593,26 @@ export const QuestSystem = {
 // ========================================
 export const FarmingSystem = {
   update(state, dt = 0) {
-    if (!state.farm) return;
+    const globalFarm = { ...(state.farm || {}), ...((typeof window !== 'undefined' && window._dataManager && window._dataManager.publicFarm) || {}) };
+    if (Object.keys(globalFarm).length === 0) return;
     const now = Date.now();
-    const STAGE_DURATION = 60000; // 1단계당 60초 (테스트용)
+    const STAGE_DURATION = 60000;
 
-    for (const key in state.farm) {
-      const [fx, fy] = key.split(',').map(Number);
+    for (const key in globalFarm) {
+      const [fx, fy] = key.split('_').map(Number);
+      if (!isFarmableTile(fx, fy)) continue;
 
-      // [긴급 패치] 현재 지정된 텃밭 구역이 아닌 곳의 밭(고스트 밭) 자동 삭제
-      if (!isFarmableTile(fx, fy)) {
-        delete state.farm[key];
-        state.uiDirty = true;
-        continue;
-      }
+      const crop = globalFarm[key];
+      if (!crop || !crop.cropId || crop.stage >= 3 || !crop.plantedAt) continue;
 
-      const crop = state.farm[key];
-      if (!crop.cropId || crop.stage >= 3 || !crop.plantedAt) continue;
-
-      // 물을 줬다면 성장 속도 30% 가속
       const speedMult = crop.waterLevel > 0 ? 1.3 : 1.0;
       const elapsed = (now - crop.plantedAt) * speedMult;
-
       const newStage = Math.min(3, 1 + Math.floor(elapsed / STAGE_DURATION));
+
       if (newStage > crop.stage) {
-        crop.stage = newStage;
-        crop.waterLevel = 0; // 다음 단계 진입 시 수분 증발
-        state.uiDirty = true;
+        if (typeof window !== 'undefined' && window._dataManager && window._dataManager.updateFarmTile) {
+          window._dataManager.updateFarmTile(fx, fy, { ...crop, stage: newStage, waterLevel: 0 });
+        }
       }
     }
   }
