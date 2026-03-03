@@ -479,11 +479,12 @@ nearWater: ${debugInfo.nearWater}
     }
   },
 
-  toggleQuestLog(show, state) {
+  toggleQuestLog(show, state, isMayorMode = false) {
     ensureUiState(state);
     if (!el.quest) return;
     el.quest.classList.toggle('hidden', !show);
     document.body.classList.toggle('modal-open', !!show);
+    state.ui.questMayorMode = isMayorMode;
     if (show) this.renderQuestLog(state);
   },
 
@@ -623,7 +624,11 @@ nearWater: ${debugInfo.nearWater}
     `;
 
     const actionContainer = el.questDetail.querySelector('#quest-action-container');
-    if (!isDone && !isAccepted) {
+    const isMayor = !!state.ui?.questMayorMode;
+
+    if (!isMayor) {
+      actionContainer.innerHTML = '<span style="color:#aaa; font-style:italic;">&lt; 촌장에게 가서 수락/보고 하세요 &gt;</span>';
+    } else if (!isDone && !isAccepted) {
       const btn = document.createElement('button');
       btn.className = 'btn btn-accept';
       btn.textContent = '퀘스트 수락';
@@ -642,7 +647,27 @@ nearWater: ${debugInfo.nearWater}
       };
       actionContainer.appendChild(btn);
     } else if (!isDone && isAccepted) {
-      actionContainer.innerHTML = '<span style="color:#2ecc71; font-weight:bold;">[진행 중]</span>';
+      const isReady = (quest.steps || []).every(s => Number(progress[s.id] || 0) >= Math.max(1, Number(s.count || 1)));
+      if (isReady) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-claim';
+        btn.textContent = '보상 받기';
+        btn.style.padding = '8px 16px';
+        btn.style.backgroundColor = '#3498db';
+        btn.style.color = 'white';
+        btn.style.border = 'none';
+        btn.style.borderRadius = '6px';
+        btn.style.cursor = 'pointer';
+        btn.style.fontSize = '14px';
+        btn.onclick = () => {
+          if (window.GameController && window.GameController.completeQuest) {
+            window.GameController.completeQuest(quest.id);
+          }
+        };
+        actionContainer.appendChild(btn);
+      } else {
+        actionContainer.innerHTML = '<span style="color:#2ecc71; font-weight:bold;">[진행 중]</span>';
+      }
     }
   },
 
@@ -1124,6 +1149,16 @@ nearWater: ${debugInfo.nearWater}
       octx.fillRect(size * 0.3, size * 0.4, size * 0.4, size * 0.5);
       octx.fillStyle = '#2ecc71';
       octx.fillRect(size * 0.45, size * 0.55, 4, 4);
+    } else if (item.id === 'crop_greenonion') {
+      octx.fillStyle = '#ecf0f1';
+      octx.fillRect(size * 0.4, size * 0.4, size * 0.2, size * 0.4);
+      octx.fillStyle = '#2ecc71';
+      octx.fillRect(size * 0.3, size * 0.1, size * 0.4, size * 0.3);
+    } else if (item.toolKind === 'FARM_SEED' && item.harvestsInto === 'crop_greenonion') {
+      octx.fillStyle = '#8b4513';
+      octx.fillRect(size * 0.3, size * 0.4, size * 0.4, size * 0.5);
+      octx.fillStyle = '#ecf0f1';
+      octx.fillRect(size * 0.45, size * 0.55, 4, 4);
     } else if (item.id === 'crop_carrot') {
       octx.fillStyle = '#e67e22';
       octx.beginPath(); octx.moveTo(size * 0.3, size * 0.2); octx.lineTo(size * 0.7, size * 0.2); octx.lineTo(size * 0.5, size * 0.8); octx.fill();
@@ -1460,10 +1495,14 @@ nearWater: ${debugInfo.nearWater}
         <div class="shop-detail-effect">${effect || selected.subtitle || ''}</div>
       </div>
       ${isStackable && shopMode === 'BUY' ? `
-      <div class="qty-selector" style="display:flex;align-items:center;justify-content:center;margin-bottom:10px;gap:10px;">
+      <div class="qty-selector" style="display:flex;align-items:center;justify-content:center;margin-bottom:5px;gap:10px;">
         <button type="button" id="btn-qty-minus" class="btn" style="width:30px;padding:0;">-</button>
         <span id="qty-display" style="font-size:18px;font-weight:bold;min-width:30px;text-align:center;">${_shopPurchaseCount}</span>
         <button type="button" id="btn-qty-plus" class="btn" style="width:30px;padding:0;">+</button>
+      </div>
+      <div class="qty-quick" style="display:flex; justify-content:center; gap:8px; margin-bottom:10px;">
+        <button type="button" id="btn-qty-plus10" class="btn" style="padding:4px 8px; font-size:12px;">+10</button>
+        <button type="button" id="btn-qty-max" class="btn" style="padding:4px 8px; font-size:12px;">MAX(99)</button>
       </div>
       ` : ''}
       <div class="shop-detail-actions"></div>
@@ -1500,13 +1539,20 @@ nearWater: ${debugInfo.nearWater}
       const qtyDisplay = detail.querySelector('#qty-display');
       const minusBtn = detail.querySelector('#btn-qty-minus');
       const plusBtn = detail.querySelector('#btn-qty-plus');
+      const plus10Btn = detail.querySelector('#btn-qty-plus10');
+      const maxBtn = detail.querySelector('#btn-qty-max');
+
+      const updateBtnText = () => {
+        if (qtyDisplay) qtyDisplay.textContent = String(_shopPurchaseCount);
+        const btn = actions.querySelector('.btn');
+        if (btn) btn.textContent = `${selected.actionLabel} (${selected.price * _shopPurchaseCount}G)`;
+      };
+
       if (minusBtn) {
         minusBtn.onclick = () => {
           if (_shopPurchaseCount > 1) {
             _shopPurchaseCount--;
-            if (qtyDisplay) qtyDisplay.textContent = String(_shopPurchaseCount);
-            const btn = actions.querySelector('.btn');
-            if (btn) btn.textContent = `${selected.actionLabel} (${selected.price * _shopPurchaseCount}G)`;
+            updateBtnText();
           }
         };
       }
@@ -1514,10 +1560,20 @@ nearWater: ${debugInfo.nearWater}
         plusBtn.onclick = () => {
           if (_shopPurchaseCount < 99) {
             _shopPurchaseCount++;
-            if (qtyDisplay) qtyDisplay.textContent = String(_shopPurchaseCount);
-            const btn = actions.querySelector('.btn');
-            if (btn) btn.textContent = `${selected.actionLabel} (${selected.price * _shopPurchaseCount}G)`;
+            updateBtnText();
           }
+        };
+      }
+      if (plus10Btn) {
+        plus10Btn.onclick = () => {
+          _shopPurchaseCount = Math.min(99, _shopPurchaseCount + 10);
+          updateBtnText();
+        };
+      }
+      if (maxBtn) {
+        maxBtn.onclick = () => {
+          _shopPurchaseCount = 99;
+          updateBtnText();
         };
       }
     }
